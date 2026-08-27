@@ -152,6 +152,16 @@ func saveToken(path string, tok *oauth2.Token) error {
 	if err != nil {
 		return err
 	}
+	// The 0o600 mode above only applies to newly-created files; if path
+	// already existed (e.g. re-running `auth` to refresh a token) with
+	// looser permissions from an older version of this tool or a manual
+	// edit, OpenFile does NOT tighten them. Force it explicitly so a
+	// stale, world- or group-readable token file can never survive a
+	// save.
+	if chmodErr := f.Chmod(0o600); chmodErr != nil {
+		_ = f.Close()
+		return fmt.Errorf("chmod token file %s to 0600: %w", path, chmodErr)
+	}
 	// #nosec G117 -- this file IS the on-disk token store; the whole point
 	// of this function is to persist the OAuth2 token (including its
 	// access token) locally at 0600, alongside the credentials file the

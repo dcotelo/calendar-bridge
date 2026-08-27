@@ -1,6 +1,12 @@
 package googleauth
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"golang.org/x/oauth2"
+)
 
 func TestExtractAuthCode(t *testing.T) {
 	cases := []struct {
@@ -67,5 +73,47 @@ func TestExtractAuthCode(t *testing.T) {
 				t.Errorf("extractAuthCode(%q) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSaveToken_TightensExistingFilePermissions is a regression test: a
+// pre-existing token file with looser-than-0600 permissions (e.g. left
+// over from an older version of this tool, or a manual `chmod`) must have
+// its permissions tightened on every save, not just at creation time.
+// os.OpenFile's mode argument only applies when it actually creates the
+// file — it silently leaves an existing file's permissions untouched
+// otherwise.
+func TestSaveToken_TightensExistingFilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token.json")
+
+	// Pre-create the file with permissive mode, as if it predated the
+	// 0600 requirement or was manually loosened.
+	// #nosec G306 -- intentionally permissive: this is the exact stale
+	// state the test exists to exercise and fix, not the code under test.
+	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("seeding pre-existing token file: %v", err)
+	}
+
+	tok := &oauth2.Token{AccessToken: "test-access-token"}
+	if err := saveToken(path, tok); err != nil {
+		t.Fatalf("saveToken() error = %v, want nil", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat token file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("token file mode after saveToken = %o, want 0600 (existing file's looser permissions must be tightened, not just skipped)", got)
+	}
+
+	// Confirm the token itself actually round-trips, not just the mode.
+	got, err := tokenFromFile(path)
+	if err != nil {
+		t.Fatalf("tokenFromFile() error = %v, want nil", err)
+	}
+	if got.AccessToken != tok.AccessToken {
+		t.Errorf("tokenFromFile().AccessToken = %q, want %q", got.AccessToken, tok.AccessToken)
 	}
 }
