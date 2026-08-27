@@ -1,0 +1,26 @@
+# Fly.io app configuration for calendar-bridge.
+#
+# calendar-bridge is a long-running poller, not an HTTP service, so no
+# [[services]] block with exposed ports is needed — just one small always-on
+# machine.
+#
+# Setup:
+#   fly launch --no-deploy   # creates the app, adjust name/region as asked
+#   fly volumes create cb_config --size 1 -a <your-app-name>
+#   # Upload config.yaml + secrets/ into the volume (see README "Fly.io"
+#   # section) before the first deploy — the container expects
+#   # /app/config/config.yaml and /app/config/secrets/*.
+#   fly deploy
+
+app = "calendar-bridge"
+primary_region = "iad"
+
+[build]
+
+[mounts]
+  source = "cb_config"
+  destination = "/app/config"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

@@ -1,0 +1,25 @@
+# calendar-bridge config
+#
+# Copy to config.yaml and fill in your accounts. Do NOT commit config.yaml,
+# credentials files, or token files — they're all gitignored by default.
+
+accounts:
+  - name: personal
+    credentials_file: secrets/personal-credentials.json
+    token_file: secrets/personal-token.json
+    calendar_id: primary
+
+  - name: work-acme
+    credentials_file: secrets/work-acme-credentials.json
+    token_file: secrets/work-acme-token.json
+    calendar_id: primary
+
+  # Add as many accounts as you need (personal Gmail + N Workspace domains).
+  # - name: work-other
+  #   credentials_file: secrets/work-other-credentials.json
+  #   token_file: secrets/work-other-token.json
+  #   calendar_id: primary
+
+poll_interval: 5m
+lookahead_days: 30
+block_title: "Busy (calendar-bridge)"

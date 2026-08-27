@@ -1,0 +1,18 @@
+# Secrets and local config — never commit these.
+config.yaml
+secrets/
+*.token.json
+*-token.json
+*-credentials.json
+
+# Build artifacts
+/calendar-bridge
+/bin/
+*.exe
+
+# Go
+/vendor/
+
+# OS/editor
+.DS_Store
+*.swp

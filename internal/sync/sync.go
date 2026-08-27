@@ -1,0 +1,240 @@
+// Package sync implements the busy-block propagation logic between
+// multiple Google Calendar accounts.
+package sync
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	calendar "google.golang.org/api/calendar/v3"
+)
+
+// ownerKey and sourceEventKey are the extendedProperties keys used to tag
+// blocks that calendar-bridge created, and to remember which source event
+// each block mirrors. These are the only signal that lets the sync engine
+// tell "a real event a human made" apart from "a block calendar-bridge
+// made", so every block calendar-bridge writes must carry both.
+const (
+	ownerKey          = "calendarBridgeOwner"
+	ownerValue        = "calendar-bridge"
+	sourceAccountKey  = "calendarBridgeSourceAccount"
+	sourceEventKey    = "calendarBridgeSourceEventID"
+	sourceCalendarKey = "calendarBridgeSourceCalendarID"
+)
+
+// Account pairs a Calendar API client with the metadata sync needs to
+// address it.
+type Account struct {
+	Name       string
+	CalendarID string
+	Service    *calendar.Service
+}
+
+// Engine propagates busy blocks across a set of accounts.
+type Engine struct {
+	Accounts      []Account
+	BlockTitle    string
+	LookaheadDays int
+	Logger        *slog.Logger
+}
+
+// isOwnedBlock reports whether ev is a block calendar-bridge created
+// (rather than a real event a human made), based on extendedProperties.
+func isOwnedBlock(ev *calendar.Event) bool {
+	if ev.ExtendedProperties == nil || ev.ExtendedProperties.Private == nil {
+		return false
+	}
+	return ev.ExtendedProperties.Private[ownerKey] == ownerValue
+}
+
+// sourceIdentity extracts the (account, calendar, event ID) an owned block
+// mirrors, for matching against live source events during GC.
+func sourceIdentity(ev *calendar.Event) (account, calendarID, eventID string, ok bool) {
+	if ev.ExtendedProperties == nil || ev.ExtendedProperties.Private == nil {
+		return "", "", "", false
+	}
+	p := ev.ExtendedProperties.Private
+	account = p[sourceAccountKey]
+	calendarID = p[sourceCalendarKey]
+	eventID = p[sourceEventKey]
+	return account, calendarID, eventID, account != "" && calendarID != "" && eventID != ""
+}
+
+// SyncOnce runs a single synchronization pass: for every account, fetch
+// real (non-owned) events in the lookahead window, then ensure a matching
+// busy block exists on every other account, and remove blocks whose source
+// event is gone.
+func (e *Engine) SyncOnce(ctx context.Context) error {
+	now := time.Now()
+	timeMin := now.Add(-24 * time.Hour) // small backward buffer for in-progress events
+	timeMax := now.Add(time.Duration(e.LookaheadDays) * 24 * time.Hour)
+
+	// 1. Pull real events (and existing owned blocks, for GC) from every account.
+	type accountEvents struct {
+		real  []*calendar.Event
+		owned []*calendar.Event
+	}
+	byAccount := make(map[string]accountEvents, len(e.Accounts))
+
+	for _, acc := range e.Accounts {
+		events, err := listEvents(ctx, acc, timeMin, timeMax)
+		if err != nil {
+			return fmt.Errorf("listing events for account %s: %w", acc.Name, err)
+		}
+
+		var ae accountEvents
+		for _, ev := range events {
+			if ev.Status == "cancelled" {
+				continue
+			}
+			if isOwnedBlock(ev) {
+				ae.owned = append(ae.owned, ev)
+			} else {
+				ae.real = append(ae.real, ev)
+			}
+		}
+		byAccount[acc.Name] = ae
+		e.Logger.Info("fetched events", "account", acc.Name, "real", len(ae.real), "owned_blocks", len(ae.owned))
+	}
+
+	// 2. For every (source account, real event) x (target account) pair,
+	// ensure a busy block exists.
+	for _, src := range e.Accounts {
+		for _, ev := range byAccount[src.Name].real {
+			for _, dst := range e.Accounts {
+				if dst.Name == src.Name {
+					continue
+				}
+				if err := e.ensureBlock(ctx, src, ev, dst); err != nil {
+					return fmt.Errorf("ensuring block for %s/%s on %s: %w", src.Name, ev.Id, dst.Name, err)
+				}
+			}
+		}
+	}
+
+	// 3. Garbage-collect blocks whose source event no longer exists or is
+	// no longer in the live "real" set (deleted / cancelled upstream).
+	liveSourceIDs := make(map[string]bool)
+	for _, src := range e.Accounts {
+		for _, ev := range byAccount[src.Name].real {
+			liveSourceIDs[src.Name+"|"+ev.Id] = true
+		}
+	}
+
+	for _, dst := range e.Accounts {
+		for _, block := range byAccount[dst.Name].owned {
+			srcAccount, _, srcEventID, ok := sourceIdentity(block)
+			if !ok {
+				continue
+			}
+			if !liveSourceIDs[srcAccount+"|"+srcEventID] {
+				e.Logger.Info("removing stale block", "account", dst.Name, "block_id", block.Id, "source", srcAccount+"/"+srcEventID)
+				if err := dst.Service.Events.Delete(dst.CalendarID, block.Id).Context(ctx).Do(); err != nil {
+					return fmt.Errorf("deleting stale block %s on %s: %w", block.Id, dst.Name, err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// deterministicBlockKey returns a stable, deterministic private-property
+// value used to look up whether a block already exists for a given source
+// event on a given destination account, without depending on the
+// destination event's own ID (which we don't know until after creation).
+func deterministicBlockKey(srcAccount, srcEventID string) string {
+	return srcAccount + "|" + srcEventID
+}
+
+func (e *Engine) ensureBlock(ctx context.Context, src Account, srcEvent *calendar.Event, dst Account) error {
+	// Look for an existing block on dst tagged with this exact source.
+	existing, err := findBlockBySource(ctx, dst, src.Name, srcEvent.Id)
+	if err != nil {
+		return err
+	}
+
+	if existing != nil {
+		// Update times if the source event moved.
+		if !timesEqual(existing.Start, srcEvent.Start) || !timesEqual(existing.End, srcEvent.End) {
+			existing.Start = srcEvent.Start
+			existing.End = srcEvent.End
+			_, err := dst.Service.Events.Update(dst.CalendarID, existing.Id, existing).Context(ctx).Do()
+			return err
+		}
+		return nil // up to date
+	}
+
+	// Create a new block.
+	block := &calendar.Event{
+		Summary:      e.BlockTitle,
+		Start:        srcEvent.Start,
+		End:          srcEvent.End,
+		Transparency: "opaque", // shows as Busy
+		Visibility:   "private",
+		ExtendedProperties: &calendar.EventExtendedProperties{
+			Private: map[string]string{
+				ownerKey:          ownerValue,
+				sourceAccountKey:  src.Name,
+				sourceCalendarKey: src.CalendarID,
+				sourceEventKey:    srcEvent.Id,
+			},
+		},
+	}
+	_, err = dst.Service.Events.Insert(dst.CalendarID, block).Context(ctx).Do()
+	return err
+}
+
+func timesEqual(a, b *calendar.EventDateTime) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.DateTime == b.DateTime && a.Date == b.Date && a.TimeZone == b.TimeZone
+}
+
+func findBlockBySource(ctx context.Context, dst Account, srcAccount, srcEventID string) (*calendar.Event, error) {
+	key := deterministicBlockKey(srcAccount, srcEventID)
+	// The Calendar API supports filtering by a single private property
+	// key=value pair via privateExtendedProperty.
+	call := dst.Service.Events.List(dst.CalendarID).
+		PrivateExtendedProperty(sourceAccountKey + "=" + srcAccount).
+		PrivateExtendedProperty(sourceEventKey + "=" + srcEventID)
+
+	res, err := call.Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("querying existing block (key=%s): %w", key, err)
+	}
+	for _, ev := range res.Items {
+		if ev.Status != "cancelled" {
+			return ev, nil
+		}
+	}
+	return nil, nil
+}
+
+func listEvents(ctx context.Context, acc Account, timeMin, timeMax time.Time) ([]*calendar.Event, error) {
+	var all []*calendar.Event
+	pageToken := ""
+	for {
+		call := acc.Service.Events.List(acc.CalendarID).
+			TimeMin(timeMin.Format(time.RFC3339)).
+			TimeMax(timeMax.Format(time.RFC3339)).
+			SingleEvents(true).
+			MaxResults(2500)
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
+		}
+		res, err := call.Context(ctx).Do()
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, res.Items...)
+		if res.NextPageToken == "" {
+			break
+		}
+		pageToken = res.NextPageToken
+	}
+	return all, nil
+}
