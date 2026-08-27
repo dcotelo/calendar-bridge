@@ -44,6 +44,11 @@ func TestExtractAuthCode(t *testing.T) {
 			input:   "http://localhost:1/?scope=foo\n",
 			wantErr: true,
 		},
+		{
+			name:    "malformed URL",
+			input:   "http://[::1\n",
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range cases {

@@ -118,7 +118,7 @@ func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		accounts = append(accounts, sync.Account{
 			Name:       a.Name,
 			CalendarID: a.CalendarID,
-			Service:    svc,
+			Client:     sync.NewGoogleCalendarClient(svc),
 		})
 	}
 
@@ -147,6 +147,15 @@ func runSyncOnce(args []string) {
 	cycleCtx, cancel := context.WithTimeout(ctx, syncCycleTimeout)
 	defer cancel()
 	if err := engine.SyncOnce(cycleCtx); err != nil {
+		// A SIGINT/SIGTERM during this pass cancels ctx (and therefore
+		// cycleCtx), which SyncOnce surfaces as an error. That's an
+		// intentional, expected shutdown, not a failure — treat it the
+		// same way the run loop does and exit 0. Genuine timeouts and API
+		// errors still exit non-zero.
+		if ctx.Err() != nil {
+			logger.Info("received shutdown signal during sync, exiting")
+			return
+		}
 		fmt.Fprintf(os.Stderr, "sync failed: %v\n", err)
 		os.Exit(1)
 	}

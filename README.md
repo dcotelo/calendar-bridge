@@ -61,7 +61,7 @@ excluded from the current pass (fetch, propagation, *and* GC) rather than
 aborting the whole run — the other healthy accounts still get synced, and
 the error is surfaced in the return value / logs so you can act on it.
 
-```
+```text
                  ┌──────────────┐
                  │   personal   │
                  │  (Gmail)     │
@@ -179,10 +179,13 @@ docker run -v $(pwd)/config.yaml:/app/config/config.yaml:ro \
 
 Mount `config.yaml` and `secrets/` from a `Secret` (not a `ConfigMap` —
 token files are live credentials) at `/app/config`, and run the image as a
-single-replica `Deployment`. The process handles SIGTERM cleanly, so normal
-pod termination (rolling update, node drain) won't interrupt a sync pass
-mid-write. A `CronJob` running `sync-once` on a schedule also works if
-you'd rather not keep a pod always running.
+single-replica `Deployment`. The process handles SIGTERM by cancelling the
+in-flight sync pass and exiting promptly rather than being hard-killed after
+the grace period — but SIGTERM does cancel that pass, it does not let it
+finish first, so a rolling update or node drain can still interrupt a sync
+mid-flight (the next pass simply picks up where it left off). A `CronJob`
+running `sync-once` on a schedule also works if you'd rather not keep a pod
+always running.
 
 ## Known limitations
 
@@ -198,18 +201,14 @@ you'd rather not keep a pod always running.
   token for installed-app OAuth flows, so this is low-risk in practice, but
   if it ever issues a new one, the on-disk token file goes stale until you
   re-run `auth`.
-- **No interface abstraction over the Calendar API client** yet, so
-  `internal/sync` unit tests currently cover the pure logic (tagging,
-  dedup, health tracking) but not `SyncOnce` end-to-end without live
-  credentials. A fakeable client interface is a natural next step for
-  better test coverage.
+- **No interface abstraction over the Calendar API client** — resolved: `internal/sync.CalendarClient` is a small interface (list/find/insert/update/delete) that both the real Google-backed client and test fakes implement, so `SyncOnce` is covered end-to-end by fakes, not just its pure helper functions.
 
 ## Roadmap
 
 - [ ] Google Calendar API push notifications (webhooks) as an alternative
       to polling.
 - [ ] Retry with backoff on transient (429/5xx) API errors.
-- [ ] Fakeable Calendar API client interface for full `SyncOnce` unit
+- [x] Fakeable Calendar API client interface for full `SyncOnce` unit
       tests without live credentials.
 - [ ] Structured metrics (sync duration, blocks created/deleted per pass)
       for observability.
