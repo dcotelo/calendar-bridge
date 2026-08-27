@@ -1,0 +1,11 @@
+.git
+.github
+*.md
+config.yaml
+secrets/
+*.token.json
+*-token.json
+*-credentials.json
+.golangci.yml
+.goreleaser.yml
+.editorconfig

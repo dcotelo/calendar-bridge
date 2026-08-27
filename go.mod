@@ -2,6 +2,8 @@ module github.com/dcotelo/calendar-bridge
 
 go 1.25.0
 
+toolchain go1.26.7
+
 require (
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.294.0

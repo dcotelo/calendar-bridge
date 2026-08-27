@@ -126,3 +126,17 @@ func TestDeterministicBlockKey(t *testing.T) {
 		t.Errorf("deterministicBlockKey should differ for different event IDs: %q == %q", k1, k3)
 	}
 }
+
+func TestAccountIsHealthy(t *testing.T) {
+	healthy := []Account{{Name: "a"}, {Name: "b"}}
+
+	if !accountIsHealthy(healthy, "a") {
+		t.Error("accountIsHealthy(a) = false, want true")
+	}
+	if accountIsHealthy(healthy, "c") {
+		t.Error("accountIsHealthy(c) = true, want false (not in healthy set)")
+	}
+	if accountIsHealthy(nil, "a") {
+		t.Error("accountIsHealthy on nil slice should be false")
+	}
+}

@@ -9,12 +9,19 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/dcotelo/calendar-bridge/internal/config"
 	"github.com/dcotelo/calendar-bridge/internal/googleauth"
 	"github.com/dcotelo/calendar-bridge/internal/sync"
 )
+
+// syncCycleTimeout bounds a single SyncOnce pass so a hung Google API call
+// can never wedge the process indefinitely. Generous relative to expected
+// sync duration (seconds, even for many accounts/events) but still finite.
+const syncCycleTimeout = 5 * time.Minute
 
 func main() {
 	if len(os.Args) < 2 {
@@ -55,7 +62,9 @@ Usage:
 
 func loadConfig(fs *flag.FlagSet, args []string) *config.Config {
 	configPath := fs.String("config", "config.yaml", "path to config file")
-	fs.Parse(args)
+	// fs was constructed with flag.ExitOnError, so Parse already exits the
+	// process on a parse error; the returned error is always nil here.
+	_ = fs.Parse(args)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -69,7 +78,7 @@ func runAuth(args []string) {
 	fs := flag.NewFlagSet("auth", flag.ExitOnError)
 	configPath := fs.String("config", "config.yaml", "path to config file")
 	accountName := fs.String("account", "", "account name from config to authorize")
-	fs.Parse(args)
+	_ = fs.Parse(args) // ExitOnError FlagSet: Parse exits on error, never returns one here
 
 	if *accountName == "" {
 		fmt.Fprintln(os.Stderr, "auth: -account is required")
@@ -111,7 +120,7 @@ func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		accounts = append(accounts, sync.Account{
 			Name:       a.Name,
 			CalendarID: a.CalendarID,
-			Service:    svc,
+			Client:     sync.NewGoogleCalendarClient(svc),
 		})
 	}
 
@@ -128,7 +137,8 @@ func runSyncOnce(args []string) {
 	cfg := loadConfig(fs, args)
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	engine, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
@@ -136,7 +146,18 @@ func runSyncOnce(args []string) {
 		os.Exit(1)
 	}
 
-	if err := engine.SyncOnce(ctx); err != nil {
+	cycleCtx, cancel := context.WithTimeout(ctx, syncCycleTimeout)
+	defer cancel()
+	if err := engine.SyncOnce(cycleCtx); err != nil {
+		// A SIGINT/SIGTERM during this pass cancels ctx (and therefore
+		// cycleCtx), which SyncOnce surfaces as an error. That's an
+		// intentional, expected shutdown, not a failure — treat it the
+		// same way the run loop does and exit 0. Genuine timeouts and API
+		// errors still exit non-zero.
+		if ctx.Err() != nil {
+			logger.Info("received shutdown signal during sync, exiting")
+			return
+		}
 		fmt.Fprintf(os.Stderr, "sync failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -148,7 +169,8 @@ func runSync(args []string) {
 	cfg := loadConfig(fs, args)
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	engine, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
@@ -164,11 +186,27 @@ func runSync(args []string) {
 
 	logger.Info("starting sync loop", "interval", interval, "accounts", len(cfg.Accounts))
 	for {
-		if err := engine.SyncOnce(ctx); err != nil {
+		select {
+		case <-ctx.Done():
+			logger.Info("received shutdown signal, exiting")
+			return
+		default:
+		}
+
+		cycleCtx, cancel := context.WithTimeout(ctx, syncCycleTimeout)
+		err := engine.SyncOnce(cycleCtx)
+		cancel()
+		if err != nil {
 			logger.Error("sync pass failed", "error", err)
 		} else {
 			logger.Info("sync pass complete")
 		}
-		time.Sleep(interval)
+
+		select {
+		case <-ctx.Done():
+			logger.Info("received shutdown signal, exiting")
+			return
+		case <-time.After(interval):
+		}
 	}
 }

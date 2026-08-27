@@ -4,6 +4,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -25,11 +26,12 @@ const (
 )
 
 // Account pairs a Calendar API client with the metadata sync needs to
-// address it.
+// address it. Client is a CalendarClient (interface), not a concrete
+// *calendar.Service, so tests can substitute a fake.
 type Account struct {
 	Name       string
 	CalendarID string
-	Service    *calendar.Service
+	Client     CalendarClient
 }
 
 // Engine propagates busy blocks across a set of accounts.
@@ -66,6 +68,13 @@ func sourceIdentity(ev *calendar.Event) (account, calendarID, eventID string, ok
 // real (non-owned) events in the lookahead window, then ensure a matching
 // busy block exists on every other account, and remove blocks whose source
 // event is gone.
+//
+// A failure on one account (expired token, transient API error, etc.) does
+// not abort the whole pass: SyncOnce logs it, excludes that account from
+// this cycle's propagation and GC, and keeps going for every account that
+// is healthy. All per-account fetch errors are joined and returned at the
+// end so callers can alert on them, but a partial pass still makes forward
+// progress for the accounts that did work.
 func (e *Engine) SyncOnce(ctx context.Context) error {
 	now := time.Now()
 	timeMin := now.Add(-24 * time.Hour) // small backward buffer for in-progress events
@@ -77,11 +86,15 @@ func (e *Engine) SyncOnce(ctx context.Context) error {
 		owned []*calendar.Event
 	}
 	byAccount := make(map[string]accountEvents, len(e.Accounts))
+	healthy := make([]Account, 0, len(e.Accounts))
+	var fetchErrs []error
 
 	for _, acc := range e.Accounts {
-		events, err := listEvents(ctx, acc, timeMin, timeMax)
+		events, err := acc.Client.ListEvents(ctx, acc.CalendarID, timeMin, timeMax)
 		if err != nil {
-			return fmt.Errorf("listing events for account %s: %w", acc.Name, err)
+			e.Logger.Error("failed to list events, excluding account from this sync pass", "account", acc.Name, "error", err)
+			fetchErrs = append(fetchErrs, fmt.Errorf("listing events for account %s: %w", acc.Name, err))
+			continue
 		}
 
 		var ae accountEvents
@@ -96,19 +109,30 @@ func (e *Engine) SyncOnce(ctx context.Context) error {
 			}
 		}
 		byAccount[acc.Name] = ae
+		healthy = append(healthy, acc)
 		e.Logger.Info("fetched events", "account", acc.Name, "real", len(ae.real), "owned_blocks", len(ae.owned))
+	}
+
+	// Accounts that failed to fetch are excluded from propagation and GC
+	// entirely this cycle: we don't have their current event state, so we
+	// can neither safely push blocks to them nor safely delete blocks that
+	// mirror their events elsewhere.
+	if len(healthy) < 2 {
+		fetchErrs = append(fetchErrs, fmt.Errorf("fewer than 2 healthy accounts (%d), nothing to sync this pass", len(healthy)))
+		return errors.Join(fetchErrs...)
 	}
 
 	// 2. For every (source account, real event) x (target account) pair,
 	// ensure a busy block exists.
-	for _, src := range e.Accounts {
+	var syncErrs []error
+	for _, src := range healthy {
 		for _, ev := range byAccount[src.Name].real {
-			for _, dst := range e.Accounts {
+			for _, dst := range healthy {
 				if dst.Name == src.Name {
 					continue
 				}
 				if err := e.ensureBlock(ctx, src, ev, dst); err != nil {
-					return fmt.Errorf("ensuring block for %s/%s on %s: %w", src.Name, ev.Id, dst.Name, err)
+					syncErrs = append(syncErrs, fmt.Errorf("ensuring block for %s/%s on %s: %w", src.Name, ev.Id, dst.Name, err))
 				}
 			}
 		}
@@ -117,28 +141,44 @@ func (e *Engine) SyncOnce(ctx context.Context) error {
 	// 3. Garbage-collect blocks whose source event no longer exists or is
 	// no longer in the live "real" set (deleted / cancelled upstream).
 	liveSourceIDs := make(map[string]bool)
-	for _, src := range e.Accounts {
+	for _, src := range healthy {
 		for _, ev := range byAccount[src.Name].real {
 			liveSourceIDs[src.Name+"|"+ev.Id] = true
 		}
 	}
 
-	for _, dst := range e.Accounts {
+	for _, dst := range healthy {
 		for _, block := range byAccount[dst.Name].owned {
 			srcAccount, _, srcEventID, ok := sourceIdentity(block)
 			if !ok {
 				continue
 			}
+			// Only GC when the source account itself was healthy this
+			// pass; otherwise liveSourceIDs is incomplete for it and we'd
+			// wrongly delete a block mirroring an event we simply failed
+			// to fetch this cycle.
+			if !accountIsHealthy(healthy, srcAccount) {
+				continue
+			}
 			if !liveSourceIDs[srcAccount+"|"+srcEventID] {
 				e.Logger.Info("removing stale block", "account", dst.Name, "block_id", block.Id, "source", srcAccount+"/"+srcEventID)
-				if err := dst.Service.Events.Delete(dst.CalendarID, block.Id).Context(ctx).Do(); err != nil {
-					return fmt.Errorf("deleting stale block %s on %s: %w", block.Id, dst.Name, err)
+				if err := dst.Client.DeleteEvent(ctx, dst.CalendarID, block.Id); err != nil {
+					syncErrs = append(syncErrs, fmt.Errorf("deleting stale block %s on %s: %w", block.Id, dst.Name, err))
 				}
 			}
 		}
 	}
 
-	return nil
+	return errors.Join(append(fetchErrs, syncErrs...)...)
+}
+
+func accountIsHealthy(healthy []Account, name string) bool {
+	for _, a := range healthy {
+		if a.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // deterministicBlockKey returns a stable, deterministic private-property
@@ -151,7 +191,7 @@ func deterministicBlockKey(srcAccount, srcEventID string) string {
 
 func (e *Engine) ensureBlock(ctx context.Context, src Account, srcEvent *calendar.Event, dst Account) error {
 	// Look for an existing block on dst tagged with this exact source.
-	existing, err := findBlockBySource(ctx, dst, src.Name, srcEvent.Id)
+	existing, err := dst.Client.FindBlockBySource(ctx, dst.CalendarID, src.Name, srcEvent.Id)
 	if err != nil {
 		return err
 	}
@@ -161,7 +201,7 @@ func (e *Engine) ensureBlock(ctx context.Context, src Account, srcEvent *calenda
 		if !timesEqual(existing.Start, srcEvent.Start) || !timesEqual(existing.End, srcEvent.End) {
 			existing.Start = srcEvent.Start
 			existing.End = srcEvent.End
-			_, err := dst.Service.Events.Update(dst.CalendarID, existing.Id, existing).Context(ctx).Do()
+			_, err := dst.Client.UpdateEvent(ctx, dst.CalendarID, existing.Id, existing)
 			return err
 		}
 		return nil // up to date
@@ -183,7 +223,7 @@ func (e *Engine) ensureBlock(ctx context.Context, src Account, srcEvent *calenda
 			},
 		},
 	}
-	_, err = dst.Service.Events.Insert(dst.CalendarID, block).Context(ctx).Do()
+	_, err = dst.Client.InsertEvent(ctx, dst.CalendarID, block)
 	return err
 }
 
@@ -192,49 +232,4 @@ func timesEqual(a, b *calendar.EventDateTime) bool {
 		return a == b
 	}
 	return a.DateTime == b.DateTime && a.Date == b.Date && a.TimeZone == b.TimeZone
-}
-
-func findBlockBySource(ctx context.Context, dst Account, srcAccount, srcEventID string) (*calendar.Event, error) {
-	key := deterministicBlockKey(srcAccount, srcEventID)
-	// The Calendar API supports filtering by a single private property
-	// key=value pair via privateExtendedProperty.
-	call := dst.Service.Events.List(dst.CalendarID).
-		PrivateExtendedProperty(sourceAccountKey + "=" + srcAccount).
-		PrivateExtendedProperty(sourceEventKey + "=" + srcEventID)
-
-	res, err := call.Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("querying existing block (key=%s): %w", key, err)
-	}
-	for _, ev := range res.Items {
-		if ev.Status != "cancelled" {
-			return ev, nil
-		}
-	}
-	return nil, nil
-}
-
-func listEvents(ctx context.Context, acc Account, timeMin, timeMax time.Time) ([]*calendar.Event, error) {
-	var all []*calendar.Event
-	pageToken := ""
-	for {
-		call := acc.Service.Events.List(acc.CalendarID).
-			TimeMin(timeMin.Format(time.RFC3339)).
-			TimeMax(timeMax.Format(time.RFC3339)).
-			SingleEvents(true).
-			MaxResults(2500)
-		if pageToken != "" {
-			call = call.PageToken(pageToken)
-		}
-		res, err := call.Context(ctx).Do()
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, res.Items...)
-		if res.NextPageToken == "" {
-			break
-		}
-		pageToken = res.NextPageToken
-	}
-	return all, nil
 }
