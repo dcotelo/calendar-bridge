@@ -1,0 +1,81 @@
+# CodeRabbit configuration for calendar-bridge.
+# Reference: https://docs.coderabbit.ai/reference/configuration
+
+language: "en-US"
+
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    ignore_title_keywords: ["wip", "draft"]
+  path_filters:
+    - "!secrets/**"
+    - "!config.yaml"
+    - "!*-token.json"
+    - "!*-credentials.json"
+  path_instructions:
+    - path: "internal/googleauth/**"
+      instructions: >
+        This package handles OAuth2 token exchange and persistence for
+        Google accounts. Flag anything that could leak a token or
+        credentials file path into logs, error messages, or return values.
+        Token files must always be written with 0600 permissions. Any
+        change to scopes (calendar.Scopes) should be called out explicitly
+        as a security-relevant change, since it widens what the app can
+        read/write on the user's calendar.
+    - path: "internal/sync/**"
+      instructions: >
+        This is the core sync engine. The critical invariant: calendar-bridge
+        must never create a busy block without tagging it via
+        ExtendedProperties.Private (ownerKey/sourceAccountKey/sourceEventKey),
+        and it must never treat an untagged event as safe to delete or
+        overwrite. Review carefully for anything that could (a) cause an
+        infinite sync loop between two calendars, (b) delete or modify a
+        real user event, or (c) leak event titles/details across accounts
+        (only free/busy state should propagate, not event content).
+    - path: "**/*_test.go"
+      instructions: >
+        Prefer table-driven tests. Flag missing coverage for error paths,
+        not just the happy path.
+    - path: "cmd/calendar-bridge/**"
+      instructions: >
+        CLI entry points. Flag any place a credential, token, or file path
+        could be printed to stdout/stderr in a way that would leak into
+        shared logs.
+    - path: "Dockerfile"
+      instructions: >
+        Flag any change that bakes secrets into image layers or runs the
+        container as root instead of the existing distroless nonroot base.
+    - path: "fly.toml"
+      instructions: >
+        Flag anything that would expose the poller as a public HTTP
+        service — it should stay a background process with no
+        [[services]]/port bindings.
+  poem: false
+  suggested_labels: true
+  auto_title_instructions: >
+    Keep titles imperative and scoped, e.g. "Add token refresh retry" not
+    "Fixes".
+  finishing_touches:
+    docstrings:
+      enabled: true
+    unit_tests:
+      enabled: true
+  pre_merge_checks:
+    docstring_coverage:
+      mode: warning
+      threshold: 70
+    title:
+      mode: warning
+    description:
+      mode: warning
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: auto
