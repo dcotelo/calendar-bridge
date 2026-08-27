@@ -1,7 +1,9 @@
 # calendar-bridge
 
 [![CI](https://github.com/dcotelo/calendar-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/dcotelo/calendar-bridge/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/dcotelo/calendar-bridge)](https://goreportcard.com/report/github.com/dcotelo/calendar-bridge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
 Self-hosted, open-source busy-time sync across multiple Google Calendar
 accounts (personal Gmail + Google Workspace domains). Runs on your own
@@ -224,12 +226,15 @@ always running.
 
 ## Contributing
 
-Issues and PRs welcome. CI runs `go build`, `go vet`, `go test -race`, and
-a `gofmt` check on every PR; [CodeRabbit](https://coderabbit.ai) reviews
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, PR guidelines, and
+where things live in the codebase. Issues and PRs welcome. CI runs
+`go build`, `go vet`, `go test -race`, `gofmt`, `golangci-lint`, and
+`govulncheck` on every PR; [CodeRabbit](https://coderabbit.ai) reviews
 automatically. See `.coderabbit.yaml` for the review guidance applied to
 this repo, especially the invariants called out for `internal/sync` and
 `internal/googleauth` — those two packages are the security- and
-correctness-critical ones.
+correctness-critical ones. Please report security issues per
+[SECURITY.md](SECURITY.md), not as a public issue.
 
 ## License
 

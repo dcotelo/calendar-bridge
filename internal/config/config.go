@@ -47,6 +47,8 @@ type Config struct {
 
 // Load reads and parses a YAML config file at path.
 func Load(path string) (*Config, error) {
+	// #nosec G304 -- path is an explicit CLI flag the operator passes to
+	// their own calendar-bridge invocation, not untrusted external input.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config file %s: %w", path, err)

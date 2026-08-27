@@ -166,18 +166,6 @@ func (f *fakeCalendarClient) ownedBlocks() []*calendar.Event {
 	return out
 }
 
-// realEvent builds a fixture event at an absolute RFC3339 time. Prefer
-// realEventIn for new tests — an absolute date will eventually fall outside
-// any lookahead window and start being filtered out by ListEvents.
-func realEvent(id, startRFC3339, endRFC3339 string) *calendar.Event {
-	return &calendar.Event{
-		Id:      id,
-		Summary: "Some real meeting",
-		Start:   &calendar.EventDateTime{DateTime: startRFC3339, TimeZone: "UTC"},
-		End:     &calendar.EventDateTime{DateTime: endRFC3339, TimeZone: "UTC"},
-	}
-}
-
 // realEventIn builds a fixture event offset from time.Now(), so it always
 // falls inside a typical (e.g. 30-day) lookahead window regardless of when
 // the test suite runs.

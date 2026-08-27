@@ -62,7 +62,9 @@ Usage:
 
 func loadConfig(fs *flag.FlagSet, args []string) *config.Config {
 	configPath := fs.String("config", "config.yaml", "path to config file")
-	fs.Parse(args)
+	// fs was constructed with flag.ExitOnError, so Parse already exits the
+	// process on a parse error; the returned error is always nil here.
+	_ = fs.Parse(args)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -76,7 +78,7 @@ func runAuth(args []string) {
 	fs := flag.NewFlagSet("auth", flag.ExitOnError)
 	configPath := fs.String("config", "config.yaml", "path to config file")
 	accountName := fs.String("account", "", "account name from config to authorize")
-	fs.Parse(args)
+	_ = fs.Parse(args) // ExitOnError FlagSet: Parse exits on error, never returns one here
 
 	if *accountName == "" {
 		fmt.Fprintln(os.Stderr, "auth: -account is required")
