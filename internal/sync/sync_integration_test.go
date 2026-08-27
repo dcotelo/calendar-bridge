@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
+
+	calendar "google.golang.org/api/calendar/v3"
 )
 
 func newTestEngine(accounts ...Account) *Engine {
@@ -18,7 +21,7 @@ func newTestEngine(accounts ...Account) *Engine {
 func TestSyncOnce_PropagatesBusyBlockBothWays(t *testing.T) {
 	a := newFakeCalendarClient()
 	b := newFakeCalendarClient()
-	a.seed("real-a-1", realEvent("real-a-1", "2026-09-01T10:00:00Z", "2026-09-01T11:00:00Z"))
+	a.seed("real-a-1", realEventIn("real-a-1", 24*time.Hour, time.Hour))
 
 	engine := newTestEngine(
 		Account{Name: "a", CalendarID: "primary", Client: a},
@@ -47,7 +50,7 @@ func TestSyncOnce_PropagatesBusyBlockBothWays(t *testing.T) {
 func TestSyncOnce_GarbageCollectsRemovedSourceEvent(t *testing.T) {
 	a := newFakeCalendarClient()
 	b := newFakeCalendarClient()
-	a.seed("real-a-1", realEvent("real-a-1", "2026-09-01T10:00:00Z", "2026-09-01T11:00:00Z"))
+	a.seed("real-a-1", realEventIn("real-a-1", 24*time.Hour, time.Hour))
 
 	engine := newTestEngine(
 		Account{Name: "a", CalendarID: "primary", Client: a},
@@ -79,7 +82,7 @@ func TestSyncOnce_FailedAccountExcludedButOthersStillSync(t *testing.T) {
 	b := newFakeCalendarClient()
 	c := newFakeCalendarClient()
 
-	a.seed("real-a-1", realEvent("real-a-1", "2026-09-01T10:00:00Z", "2026-09-01T11:00:00Z"))
+	a.seed("real-a-1", realEventIn("real-a-1", 24*time.Hour, time.Hour))
 	b.failList = errors.New("simulated: token expired")
 
 	engine := newTestEngine(
@@ -110,7 +113,7 @@ func TestSyncOnce_FailedSourceAccountDoesNotTriggerGC(t *testing.T) {
 	a := newFakeCalendarClient()
 	b := newFakeCalendarClient()
 
-	a.seed("real-a-1", realEvent("real-a-1", "2026-09-01T10:00:00Z", "2026-09-01T11:00:00Z"))
+	a.seed("real-a-1", realEventIn("real-a-1", 24*time.Hour, time.Hour))
 
 	engine := newTestEngine(
 		Account{Name: "a", CalendarID: "primary", Client: a},
@@ -140,7 +143,7 @@ func TestSyncOnce_FailedSourceAccountDoesNotTriggerGC(t *testing.T) {
 func TestSyncOnce_UpdatesBlockWhenSourceEventMoves(t *testing.T) {
 	a := newFakeCalendarClient()
 	b := newFakeCalendarClient()
-	a.seed("real-a-1", realEvent("real-a-1", "2026-09-01T10:00:00Z", "2026-09-01T11:00:00Z"))
+	a.seed("real-a-1", realEventIn("real-a-1", 24*time.Hour, time.Hour))
 
 	engine := newTestEngine(
 		Account{Name: "a", CalendarID: "primary", Client: a},
@@ -152,7 +155,8 @@ func TestSyncOnce_UpdatesBlockWhenSourceEventMoves(t *testing.T) {
 	}
 
 	// Move the source event to a new time.
-	a.seed("real-a-1", realEvent("real-a-1", "2026-09-01T14:00:00Z", "2026-09-01T15:00:00Z"))
+	moved := realEventIn("real-a-1", 4*24*time.Hour, time.Hour)
+	a.seed("real-a-1", moved)
 
 	if err := engine.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("second SyncOnce() error = %v, want nil", err)
@@ -162,8 +166,8 @@ func TestSyncOnce_UpdatesBlockWhenSourceEventMoves(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("b owned blocks = %d, want 1 (moved, not duplicated)", len(blocks))
 	}
-	if blocks[0].Start.DateTime != "2026-09-01T14:00:00Z" {
-		t.Errorf("block start = %q, want the moved time 2026-09-01T14:00:00Z", blocks[0].Start.DateTime)
+	if blocks[0].Start.DateTime != moved.Start.DateTime {
+		t.Errorf("block start = %q, want the moved time %q", blocks[0].Start.DateTime, moved.Start.DateTime)
 	}
 }
 
@@ -181,4 +185,77 @@ func TestSyncOnce_FewerThanTwoHealthyAccountsReturnsError(t *testing.T) {
 	if err := engine.SyncOnce(context.Background()); err == nil {
 		t.Fatal("SyncOnce() error = nil, want error when fewer than 2 accounts are healthy")
 	}
+}
+
+// TestSyncOnce_NeverOverwritesUnownedEventWithMatchingProperties is a
+// regression test for a real bug CodeRabbit's review caught: the Calendar
+// API's privateExtendedProperty filter only guarantees the two queried
+// properties match — it says nothing about whether the event is actually
+// calendar-bridge-owned. If FindBlockBySource returned any event matching
+// those two properties (owned or not), ensureBlock would unconditionally
+// overwrite it, which could silently clobber a real user event that
+// happened to carry the same property values.
+func TestSyncOnce_NeverOverwritesUnownedEventWithMatchingProperties(t *testing.T) {
+	a := newFakeCalendarClient()
+	b := newFakeCalendarClient()
+	a.seed("real-a-1", realEventIn("real-a-1", 24*time.Hour, time.Hour))
+
+	// A real, unowned event on b that happens to carry the exact private
+	// properties a legitimate block would use for this source. This must
+	// never be matched/returned by FindBlockBySource, and must survive
+	// SyncOnce completely untouched.
+	imposter := &calendar.Event{
+		Id:      "b-imposter",
+		Summary: "Someone else's real meeting",
+		Start:   &calendar.EventDateTime{DateTime: time.Now().Add(2 * time.Hour).Format(time.RFC3339), TimeZone: "UTC"},
+		End:     &calendar.EventDateTime{DateTime: time.Now().Add(3 * time.Hour).Format(time.RFC3339), TimeZone: "UTC"},
+		ExtendedProperties: &calendar.EventExtendedProperties{
+			Private: map[string]string{
+				// Deliberately omits ownerKey/ownerValue — an unowned
+				// event that coincidentally carries the source properties
+				// calendar-bridge would use to look up a block for a's
+				// event.
+				sourceAccountKey:  "a",
+				sourceCalendarKey: "primary",
+				sourceEventKey:    "real-a-1",
+			},
+		},
+	}
+	b.seed("b-imposter", imposter)
+
+	if err := engine(a, b).SyncOnce(context.Background()); err != nil {
+		t.Fatalf("SyncOnce() error = %v, want nil", err)
+	}
+
+	b.mu.Lock()
+	got, stillThere := b.events["b-imposter"]
+	b.mu.Unlock()
+	if !stillThere {
+		t.Fatal("imposter event was deleted, want it left untouched")
+	}
+	if got.Summary != "Someone else's real meeting" {
+		t.Errorf("imposter event was overwritten: summary = %q, want unchanged", got.Summary)
+	}
+	if isOwnedBlock(got) {
+		t.Error("imposter event became owned after sync, want it to remain a real, unowned event")
+	}
+
+	// calendar-bridge should have created a *separate*, properly-owned
+	// block for a's event rather than reusing the imposter.
+	owned := b.ownedBlocks()
+	if len(owned) != 1 {
+		t.Fatalf("b owned blocks = %d, want 1 (a new block, distinct from the imposter)", len(owned))
+	}
+	if owned[0].Id == "b-imposter" {
+		t.Error("the owned block has the imposter's ID — it was reused instead of creating a new one")
+	}
+}
+
+func engine(clients ...*fakeCalendarClient) *Engine {
+	accounts := make([]Account, len(clients))
+	names := []string{"a", "b", "c", "d", "e"}
+	for i, c := range clients {
+		accounts[i] = Account{Name: names[i], CalendarID: "primary", Client: c}
+	}
+	return newTestEngine(accounts...)
 }

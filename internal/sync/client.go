@@ -82,7 +82,16 @@ func (c *googleCalendarClient) FindBlockBySource(ctx context.Context, calendarID
 		return nil, fmt.Errorf("querying existing block (source=%s/%s): %w", srcAccount, srcEventID, err)
 	}
 	for _, ev := range res.Items {
-		if ev.Status != "cancelled" {
+		// The privateExtendedProperty filter only guarantees the two
+		// queried keys match — it says nothing about whether this event
+		// actually carries the full calendar-bridge ownership tag. A real
+		// user event could coincidentally (or adversarially) carry the
+		// same source-account/source-event property values without being
+		// one calendar-bridge created. ensureBlock unconditionally
+		// updates whatever FindBlockBySource returns, so returning an
+		// unowned event here would let sync silently overwrite a real
+		// event. isOwnedBlock is the actual ownership check.
+		if ev.Status != "cancelled" && isOwnedBlock(ev) {
 			return ev, nil
 		}
 	}
