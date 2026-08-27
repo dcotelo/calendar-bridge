@@ -1,44 +1,81 @@
 # calendar-bridge
 
+[![CI](https://github.com/dcotelo/calendar-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/dcotelo/calendar-bridge/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Self-hosted, open-source busy-time sync across multiple Google Calendar
 accounts (personal Gmail + Google Workspace domains). Runs on your own
 infrastructure. No third-party service ever sees your calendar data.
 
-## Problem
+## The problem
 
 Google Calendar has no native way to auto-block time across separate
-accounts, and this gets worse across different Workspace domains (personal
-Gmail + multiple company Workspaces). Tools like OneCal or Calendar Bridge
-solve this, but route your calendar data through their own servers.
+accounts, and it's worse across different Workspace domains (personal Gmail
++ multiple company Workspaces). Hosted tools like OneCal or Calendar Bridge
+solve this, but your event data flows through their servers to do it.
+calendar-bridge does the same job entirely inside infrastructure you
+control.
 
-## What this does
+## What it does
 
-- Watches N Google Calendar accounts you authenticate (OAuth2, tokens stay
-  on your infra).
-- When a real event appears/changes/is removed on one calendar, upserts a
-  "Busy" placeholder block on the others.
+- Polls N Google Calendar accounts you authenticate (OAuth2; tokens never
+  leave your infra).
+- When a real event appears, moves, or is removed on one calendar, upserts
+  or deletes a matching "Busy" block on every other configured calendar.
 - Tags every block it creates via Calendar API `extendedProperties` so it
-  never confuses "real event" with "block it created" (no sync loops, no
-  duplicate blocks).
-- One-way busy-block propagation, not full two-way mirroring: your real
-  event titles/details never leave the calendar they were created on.
+  can always tell "a real event a human made" apart from "a block
+  calendar-bridge made" — this is what prevents sync loops and accidental
+  deletion of real events.
+- Propagates free/busy state only, one-way per event. Titles, attendees,
+  locations, and descriptions never leave the calendar an event was created
+  on; the block's title is a fixed string you configure.
 
-## Status
+## What it does *not* do
 
-Early scaffold — not yet functional. Built in the open.
+- **Not** a full two-way mirror. Event content is never copied — only a
+  generic "Busy" placeholder.
+- **Not** real-time. It polls on an interval (default 5 minutes), it does
+  not use Calendar API push notifications/webhooks (yet — see
+  [Roadmap](#roadmap)).
+- **Not** a replacement for genuine multi-calendar overlay views (Google's
+  own "other calendars" sidebar already does that within one account).
 
 ## How it works
 
-Each account is polled for events in a rolling window (default: 30 days
-ahead). For every real event on one account, calendar-bridge ensures a
-matching "Busy" block exists on every *other* configured account. Blocks it
-creates are tagged via Calendar API `extendedProperties` so they're never
-mistaken for real events (no sync loops), and they're garbage-collected
-automatically once the source event is deleted or moved out of the window.
+Each configured account is polled for events in a rolling window (default:
+30 days ahead, plus a 24h look-back buffer for events already in progress).
+Every pass:
 
-Only free/busy state propagates. Event titles, attendees, and descriptions
-never leave the calendar they were created on — the block title is a fixed
-string you configure (default: `Busy (calendar-bridge)`).
+1. **Fetch.** List events on every account, split into "real" events (made
+   by a human) and "owned" blocks (previously created by calendar-bridge,
+   identified by the `calendarBridgeOwner` extended property).
+2. **Propagate.** For every real event on every account, ensure a matching
+   busy block exists on every *other* account — create it if missing,
+   update its time if the source event moved, leave it alone if already
+   correct.
+3. **Garbage collect.** Delete any owned block whose source event is no
+   longer live (deleted, cancelled, or moved out of the sync window).
+
+If one account's token has expired or its API call fails, that account is
+excluded from the current pass (fetch, propagation, *and* GC) rather than
+aborting the whole run — the other healthy accounts still get synced, and
+the error is surfaced in the return value / logs so you can act on it.
+
+```
+                 ┌──────────────┐
+                 │   personal   │
+                 │  (Gmail)     │
+                 └──────┬───────┘
+                         │ real events
+              ┌──────────┼──────────┐
+              ▼                     ▼
+      ┌──────────────┐      ┌──────────────┐
+      │  work-acme   │◄────►│  work-other  │
+      │ (Workspace)  │      │ (Workspace)  │
+      └──────────────┘      └──────────────┘
+        Busy blocks flow in every direction; only free/busy
+        state crosses account boundaries, never event content.
+```
 
 ## Setup
 
@@ -62,7 +99,23 @@ mkdir -p secrets
 # credentials_file paths in config.yaml
 ```
 
-Edit `config.yaml` with one entry per account (minimum 2).
+Edit `config.yaml` with one entry per account (minimum 2):
+
+```yaml
+accounts:
+  - name: personal
+    credentials_file: secrets/personal-credentials.json
+    token_file: secrets/personal-token.json
+    calendar_id: primary
+  - name: work-acme
+    credentials_file: secrets/work-acme-credentials.json
+    token_file: secrets/work-acme-token.json
+    calendar_id: primary
+
+poll_interval: 5m
+lookahead_days: 30
+block_title: "Busy (calendar-bridge)"
+```
 
 ### 3. Authorize each account
 
@@ -71,8 +124,11 @@ go run ./cmd/calendar-bridge auth -config config.yaml -account personal
 go run ./cmd/calendar-bridge auth -config config.yaml -account work-acme
 ```
 
-Each run opens an authorization URL — sign in, approve, and paste back the
-code. This writes the account's token file under `secrets/`.
+Each run prints an authorization URL. Open it, sign in, approve, then paste
+back either the authorization **code** or the **full redirect URL** the
+browser lands on (both are accepted — most browsers show something like
+`http://localhost:1/?code=4/0A...&scope=...`, so you don't need to pick the
+code out by hand). This writes the account's token file under `secrets/`.
 
 ### 4. Run
 
@@ -80,7 +136,8 @@ code. This writes the account's token file under `secrets/`.
 # one-off pass, useful to verify config before leaving it running
 go run ./cmd/calendar-bridge sync-once -config config.yaml
 
-# continuous loop, polling at the configured interval
+# continuous loop, polling at the configured interval, exits cleanly on
+# SIGINT/SIGTERM
 go run ./cmd/calendar-bridge run -config config.yaml
 ```
 
@@ -93,8 +150,8 @@ fly launch --no-deploy
 fly volumes create cb_config --size 1 -a <your-app-name>
 
 # Get config.yaml + secrets/ (credentials + tokens) onto the volume.
-# Easiest path: run a one-off machine with the volume mounted and scp/cat
-# your local files in, e.g.:
+# Easiest path: run a one-off machine with the volume mounted and sftp your
+# local files in:
 fly ssh console -a <your-app-name> -C "mkdir -p /app/config/secrets"
 fly ssh sftp shell -a <your-app-name>
 # > put config.yaml /app/config/config.yaml
@@ -122,9 +179,58 @@ docker run -v $(pwd)/config.yaml:/app/config/config.yaml:ro \
 
 Mount `config.yaml` and `secrets/` from a `Secret` (not a `ConfigMap` —
 token files are live credentials) at `/app/config`, and run the image as a
-single-replica `Deployment`. A `CronJob` running `sync-once` on a schedule
-also works if you'd rather not keep a pod always running.
+single-replica `Deployment`. The process handles SIGTERM cleanly, so normal
+pod termination (rolling update, node drain) won't interrupt a sync pass
+mid-write. A `CronJob` running `sync-once` on a schedule also works if
+you'd rather not keep a pod always running.
 
+## Known limitations
+
+- **Polling, not push.** A change on one calendar can take up to
+  `poll_interval` to propagate. Google Calendar API push notifications
+  (webhooks) would make this near-instant but add real infrastructure
+  requirements (a public HTTPS endpoint, channel renewal); tracked in
+  [Roadmap](#roadmap).
+- **No retry/backoff on transient API errors.** A single 429/5xx from the
+  Calendar API fails that account for the current pass; it's picked up
+  again next cycle. Fine at low poll frequency, but not ideal under load.
+- **Refresh tokens aren't re-persisted.** Google rarely rotates the refresh
+  token for installed-app OAuth flows, so this is low-risk in practice, but
+  if it ever issues a new one, the on-disk token file goes stale until you
+  re-run `auth`.
+- **No interface abstraction over the Calendar API client** yet, so
+  `internal/sync` unit tests currently cover the pure logic (tagging,
+  dedup, health tracking) but not `SyncOnce` end-to-end without live
+  credentials. A fakeable client interface is a natural next step for
+  better test coverage.
+
+## Roadmap
+
+- [ ] Google Calendar API push notifications (webhooks) as an alternative
+      to polling.
+- [ ] Retry with backoff on transient (429/5xx) API errors.
+- [ ] Fakeable Calendar API client interface for full `SyncOnce` unit
+      tests without live credentials.
+- [ ] Structured metrics (sync duration, blocks created/deleted per pass)
+      for observability.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `account not yet authorized, run: calendar-bridge auth <account-name>` | Token file missing or unreadable — run the `auth` step for that account. |
+| `sync failed: fewer than 2 healthy accounts` | Two or more accounts failed to fetch this pass (expired tokens, revoked access, network). Check logs for the per-account errors, re-run `auth` for any account whose token expired. |
+| Busy blocks not appearing | Confirm `poll_interval` has actually elapsed since the source event was created, and that the source event falls within `lookahead_days`. |
+| Duplicate/orphaned "Busy" blocks after uninstalling | calendar-bridge only garbage-collects blocks it can currently see and match to a live source event. If you stop running it, or delete `config.yaml`, existing blocks are left in place — delete them manually or search each calendar for events titled with your `block_title`. |
+
+## Contributing
+
+Issues and PRs welcome. CI runs `go build`, `go vet`, `go test -race`, and
+a `gofmt` check on every PR; [CodeRabbit](https://coderabbit.ai) reviews
+automatically. See `.coderabbit.yaml` for the review guidance applied to
+this repo, especially the invariants called out for `internal/sync` and
+`internal/googleauth` — those two packages are the security- and
+correctness-critical ones.
 
 ## License
 
