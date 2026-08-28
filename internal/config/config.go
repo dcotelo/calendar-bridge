@@ -15,40 +15,40 @@ import (
 type Account struct {
 	// Name is a short human-readable identifier for logs (e.g. "personal",
 	// "work-acme"). Not the email address.
-	Name string `yaml:"name"`
+	Name string `yaml:"name" json:"name"`
 
 	// CredentialsFile is the path to the OAuth2 client credentials JSON
 	// downloaded from Google Cloud Console (Desktop app type).
-	CredentialsFile string `yaml:"credentials_file"`
+	CredentialsFile string `yaml:"credentials_file" json:"credentials_file"`
 
 	// TokenFile is where the OAuth2 token (obtained via the auth flow) is
 	// stored/read for this account. One token file per account.
-	TokenFile string `yaml:"token_file"`
+	TokenFile string `yaml:"token_file" json:"token_file"`
 
 	// CalendarID is the calendar to read/write on this account. Use
 	// "primary" for the account's default calendar.
-	CalendarID string `yaml:"calendar_id"`
+	CalendarID string `yaml:"calendar_id" json:"calendar_id"`
 }
 
 // Config is the top-level calendar-bridge configuration.
 type Config struct {
 	// Accounts to sync busy time across. Minimum 2.
-	Accounts []Account `yaml:"accounts"`
+	Accounts []Account `yaml:"accounts" json:"accounts"`
 
 	// PollInterval controls how often each calendar is polled for changes,
 	// expressed as a Go duration string (e.g. "5m").
-	PollInterval string `yaml:"poll_interval"`
+	PollInterval string `yaml:"poll_interval" json:"poll_interval"`
 
 	// LookaheadDays controls how many days into the future events are
 	// synced.
-	LookaheadDays int `yaml:"lookahead_days"`
+	LookaheadDays int `yaml:"lookahead_days" json:"lookahead_days"`
 
 	// BlockTitle is the title used for synced busy blocks.
-	BlockTitle string `yaml:"block_title"`
+	BlockTitle string `yaml:"block_title" json:"block_title"`
 
 	// WebUI configures the optional local configuration web UI (see the `ui`
 	// subcommand and internal/webui). Disabled unless explicitly enabled.
-	WebUI WebUI `yaml:"web_ui"`
+	WebUI WebUI `yaml:"web_ui" json:"web_ui"`
 }
 
 // WebUI configures the local configuration management web UI.
@@ -62,17 +62,17 @@ type Config struct {
 type WebUI struct {
 	// Enabled turns the `ui` server on. When false the subcommand refuses to
 	// start.
-	Enabled bool `yaml:"enabled"`
+	Enabled bool `yaml:"enabled" json:"enabled"`
 
 	// ListenAddr is the address the UI binds. Defaults to "127.0.0.1:8090".
 	// A non-loopback host (e.g. "0.0.0.0:8090") is only permitted when
 	// AuthToken is set.
-	ListenAddr string `yaml:"listen_addr"`
+	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
 
 	// AuthToken, when set, is required as a Bearer token on every request
 	// (compared in constant time). It is mandatory to bind a non-loopback
 	// address. Treat it as a credential.
-	AuthToken string `yaml:"auth_token"`
+	AuthToken string `yaml:"auth_token" json:"auth_token,omitempty"`
 }
 
 // Load reads and parses a YAML config file at path.

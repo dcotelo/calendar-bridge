@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>calendar-bridge — configuration</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         margin: 0; padding: 0; line-height: 1.45; }
+  header { padding: 1rem 1.5rem; border-bottom: 1px solid #8884;
+           display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
+  header h1 { font-size: 1.15rem; margin: 0; }
+  header .sub { color: #8888; font-size: .85rem; }
+  main { max-width: 820px; margin: 0 auto; padding: 1.5rem; }
+  fieldset { border: 1px solid #8884; border-radius: 8px; margin: 0 0 1.25rem;
+             padding: 1rem 1.25rem; }
+  legend { font-weight: 600; padding: 0 .4rem; }
+  label { display: block; font-size: .85rem; margin: .6rem 0 .2rem; color: #8890; }
+  input, select { width: 100%; padding: .5rem .6rem; border: 1px solid #8886;
+                  border-radius: 6px; background: transparent; color: inherit;
+                  font: inherit; }
+  .row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: .5rem;
+         align-items: end; margin-bottom: .5rem; }
+  .row .full { grid-column: 1 / -1; }
+  button { font: inherit; padding: .5rem .9rem; border-radius: 6px;
+           border: 1px solid #8886; background: #4462; color: inherit;
+           cursor: pointer; }
+  button.primary { background: #2a7; border-color: #2a7; color: #fff; }
+  button.danger { background: transparent; border-color: #c556; color: #c55; }
+  .bar { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap;
+         margin-top: 1rem; }
+  .toast { padding: .6rem .9rem; border-radius: 6px; font-size: .9rem;
+           display: none; }
+  .toast.ok { background: #2a72; border: 1px solid #2a7; display: block; }
+  .toast.err { background: #c552; border: 1px solid #c55; display: block; }
+  .status { font-size: .85rem; color: #8890; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem 1rem; }
+  .muted { color: #8888; font-size: .8rem; margin-top: .3rem; }
+  code { background: #8882; padding: .1rem .3rem; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>calendar-bridge</h1>
+  <span class="sub">local configuration &mdash; changes are validated and saved to <code>config.yaml</code></span>
+</header>
+<main>
+  <div id="status" class="status">Loading status&hellip;</div>
+
+  <form id="cfgForm">
+    <fieldset>
+      <legend>Accounts</legend>
+      <p class="muted">One entry per Google account (minimum 2). Credential and token
+        <em>files</em> are referenced by path; their contents never leave your server.
+        Authorize accounts with <code>calendar-bridge auth</code> in the CLI.</p>
+      <div id="accounts"></div>
+      <button type="button" id="addAcct">+ Add account</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Sync settings</legend>
+      <div class="grid2">
+        <div>
+          <label for="pollInterval">Poll interval (e.g. 5m)</label>
+          <input id="pollInterval" name="pollInterval">
+        </div>
+        <div>
+          <label for="lookaheadDays">Lookahead days</label>
+          <input id="lookaheadDays" name="lookaheadDays" type="number" min="1">
+        </div>
+        <div class="full">
+          <label for="blockTitle">Busy block title</label>
+          <input id="blockTitle" name="blockTitle">
+        </div>
+      </div>
+    </fieldset>
+
+    <div class="bar">
+      <button type="submit" class="primary">Save configuration</button>
+      <button type="button" id="syncBtn">Sync now</button>
+      <button type="button" id="reload">Reload</button>
+    </div>
+    <div id="toast" class="toast"></div>
+  </form>
+</main>
+
+<script>
+// Bearer token: appended to the URL fragment (#token=...) when the UI is
+// exposed with auth, so it never lands in server logs as a query string.
+const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+function authHeaders(extra) {
+  const h = extra || {};
+  if (token) h["Authorization"] = "Bearer " + token;
+  return h;
+}
+
+const toast = document.getElementById("toast");
+function showToast(msg, ok) {
+  toast.textContent = msg;
+  toast.className = "toast " + (ok ? "ok" : "err");
+  if (ok) setTimeout(() => { toast.className = "toast"; }, 4000);
+}
+
+function accountRow(a) {
+  a = a || {};
+  const div = document.createElement("div");
+  div.className = "row";
+  div.innerHTML = `
+    <div><label>Name</label><input class="a-name" value="${escAttr(a.name)}"></div>
+    <div><label>Credentials file</label><input class="a-cred" value="${escAttr(a.credentials_file)}"></div>
+    <div><label>Token file</label><input class="a-tok" value="${escAttr(a.token_file)}"></div>
+    <div><label>Calendar ID</label><input class="a-cal" value="${escAttr(a.calendar_id || 'primary')}"></div>
+    <div><button type="button" class="danger a-del">Remove</button></div>`;
+  div.querySelector(".a-del").addEventListener("click", () => div.remove());
+  return div;
+}
+function escAttr(s) { return (s == null ? "" : String(s)).replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
+
+const accountsEl = document.getElementById("accounts");
+document.getElementById("addAcct").addEventListener("click", () => accountsEl.appendChild(accountRow()));
+
+async function loadConfig() {
+  const res = await fetch("/api/config", { headers: authHeaders() });
+  if (!res.ok) { showToast("Failed to load config: " + res.status, false); return; }
+  const cfg = await res.json();
+  accountsEl.innerHTML = "";
+  (cfg.accounts || []).forEach(a => accountsEl.appendChild(accountRow(a)));
+  document.getElementById("pollInterval").value = cfg.poll_interval || "";
+  document.getElementById("lookaheadDays").value = cfg.lookahead_days || "";
+  document.getElementById("blockTitle").value = cfg.block_title || "";
+}
+
+async function loadStatus() {
+  try {
+    const res = await fetch("/api/status", { headers: authHeaders() });
+    if (!res.ok) throw new Error(res.status);
+    const s = await res.json();
+    document.getElementById("status").textContent =
+      `${s.accounts || 0} accounts` +
+      (s.last_sync ? ` · last sync ${new Date(s.last_sync).toLocaleString()}` : " · not synced yet") +
+      (s.last_error ? ` · last error: ${s.last_error}` : "");
+  } catch (e) {
+    document.getElementById("status").textContent = "status unavailable";
+  }
+}
+
+function collectConfig() {
+  const accounts = [...accountsEl.querySelectorAll(".row")].map(r => ({
+    name: r.querySelector(".a-name").value.trim(),
+    credentials_file: r.querySelector(".a-cred").value.trim(),
+    token_file: r.querySelector(".a-tok").value.trim(),
+    calendar_id: r.querySelector(".a-cal").value.trim(),
+  }));
+  return {
+    accounts,
+    poll_interval: document.getElementById("pollInterval").value.trim(),
+    lookahead_days: parseInt(document.getElementById("lookaheadDays").value, 10) || 0,
+    block_title: document.getElementById("blockTitle").value.trim(),
+    web_ui: { auth_token: "" }, // empty => server keeps existing token
+  };
+}
+
+document.getElementById("cfgForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const res = await fetch("/api/config", {
+    method: "PUT",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(collectConfig()),
+  });
+  const body = await res.json().catch(() => ({}));
+  showToast(res.ok ? "Configuration saved." : ("Save failed: " + (body.error || res.status)), res.ok);
+});
+
+document.getElementById("syncBtn").addEventListener("click", async () => {
+  showToast("Running sync…", true);
+  const res = await fetch("/api/sync", { method: "POST", headers: authHeaders() });
+  const body = await res.json().catch(() => ({}));
+  showToast(res.ok ? "Sync complete." : ("Sync failed: " + (body.error || res.status)), res.ok);
+  loadStatus();
+});
+
+document.getElementById("reload").addEventListener("click", () => { loadConfig(); loadStatus(); });
+
+loadConfig();
+loadStatus();
+</script>
+</body>
+</html>

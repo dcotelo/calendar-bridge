@@ -143,6 +143,32 @@ go run ./cmd/calendar-bridge sync-once -config config.yaml
 go run ./cmd/calendar-bridge run -config config.yaml
 ```
 
+## Configuration web UI (optional)
+
+Prefer not to hand-edit YAML? calendar-bridge ships an optional local web UI to
+manage accounts and sync settings, view status, and trigger a manual sync.
+
+```yaml
+# config.yaml
+web_ui:
+  enabled: true
+  listen_addr: "127.0.0.1:8090"   # loopback-only default
+  # auth_token: "<long random secret>"  # REQUIRED to bind a non-loopback address
+```
+
+```bash
+go run ./cmd/calendar-bridge ui -config config.yaml
+# open http://127.0.0.1:8090
+```
+
+It's **off by default** and built as a local admin surface, not a hosted
+service: it binds loopback only unless you set an auth token, it **never sends
+credential or token file contents to the browser** (only the file paths, like
+editing the YAML by hand), config writes are validated and saved atomically at
+`0600`, and the OAuth flow stays in the CLI. To reach it from elsewhere, prefer
+an SSH tunnel over exposing the port. See [docs/web-ui.md](docs/web-ui.md) for
+the full security model.
+
 ## Deploying
 
 ### Fly.io (recommended, light lift)
