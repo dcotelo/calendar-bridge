@@ -60,7 +60,7 @@ If you set an `auth_token`, the browser must present it. The bundled page reads
 the token from the URL fragment (which browsers never send to the server and
 which stays out of server logs):
 
-```
+```text
 http://your-host:8090/#token=YOUR_TOKEN
 ```
 

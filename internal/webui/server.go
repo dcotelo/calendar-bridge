@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/dcotelo/calendar-bridge/internal/config"
 )
@@ -51,8 +52,14 @@ type Server struct {
 	configPath string
 	authToken  string
 	logger     *slog.Logger
-	sync       SyncFunc
+	syncFn     SyncFunc
 	status     StatusFunc
+
+	// syncing guards against overlapping sync passes triggered via the UI:
+	// concurrent POST /api/sync calls would otherwise race on the same
+	// calendars. A non-blocking TryLock lets a second request fail fast (409)
+	// rather than queue.
+	syncing sync.Mutex
 }
 
 // Options configures a Server.
@@ -90,7 +97,7 @@ func New(opts Options) (*Server, error) {
 		configPath: opts.ConfigPath,
 		authToken:  opts.AuthToken,
 		logger:     logger,
-		sync:       opts.Sync,
+		syncFn:     opts.Sync,
 		status:     opts.Status,
 	}, nil
 }

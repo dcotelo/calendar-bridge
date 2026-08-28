@@ -259,11 +259,11 @@ func runUI(args []string) {
 
 	statusFn := func() webui.Status {
 		current, err := config.Load(*configPath)
-		n := 0
-		if err == nil {
-			n = len(current.Accounts)
+		if err != nil {
+			logger.Warn("webui: status could not load config", "error", err)
+			return webui.Status{LastError: "config load failed: " + err.Error()}
 		}
-		return webui.Status{AccountsNum: n}
+		return webui.Status{AccountsNum: len(current.Accounts)}
 	}
 
 	srv, err := webui.New(webui.Options{

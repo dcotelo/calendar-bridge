@@ -225,6 +225,69 @@ func TestPutConfig_PreservesExistingAuthToken(t *testing.T) {
 	}
 }
 
+func TestPutConfig_PreservesWebUIServerFields(t *testing.T) {
+	// Config with the UI enabled on a custom addr and a token.
+	cfgYAML := validYAML + "\nweb_ui:\n  enabled: true\n  listen_addr: 127.0.0.1:9999\n  auth_token: keep-me\n"
+	path := writeConfig(t, cfgYAML)
+	srv := newTestServer(t, "keep-me", func(o *Options) {
+		o.ConfigPath = path
+		o.AuthToken = "keep-me"
+	})
+
+	// Exactly what the browser's collectConfig sends: only web_ui.auth_token,
+	// omitting enabled and listen_addr.
+	body := `{"accounts":[
+	  {"name":"personal","credentials_file":"a.json","token_file":"a-tok.json","calendar_id":"primary"},
+	  {"name":"work","credentials_file":"b.json","token_file":"b-tok.json","calendar_id":"primary"}
+	],"poll_interval":"5m","lookahead_days":30,"block_title":"Busy","web_ui":{"auth_token":""}}`
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodPut, "/api/config", "keep-me", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	reloaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reloaded.WebUI.Enabled {
+		t.Error("web_ui.enabled was wiped by a UI save; want it preserved (true)")
+	}
+	if reloaded.WebUI.ListenAddr != "127.0.0.1:9999" {
+		t.Errorf("web_ui.listen_addr = %q, want 127.0.0.1:9999 (preserved)", reloaded.WebUI.ListenAddr)
+	}
+	if reloaded.WebUI.AuthToken != "keep-me" {
+		t.Errorf("web_ui.auth_token = %q, want keep-me (preserved)", reloaded.WebUI.AuthToken)
+	}
+}
+
+func TestSync_RejectsConcurrent(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	srv := newTestServer(t, "", func(o *Options) {
+		o.Sync = func() error {
+			close(entered)
+			<-release // hold the sync open
+			return nil
+		}
+	})
+
+	// First sync in a goroutine, held open.
+	go func() {
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req(t, http.MethodPost, "/api/sync", "", ""))
+	}()
+	<-entered // ensure the first sync holds the lock
+
+	// Second concurrent sync must be rejected with 409.
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodPost, "/api/sync", "", ""))
+	if w.Code != http.StatusConflict {
+		t.Errorf("concurrent sync status = %d, want 409", w.Code)
+	}
+	close(release)
+}
+
 func TestSync_CallsCallback(t *testing.T) {
 	called := false
 	srv := newTestServer(t, "", func(o *Options) {

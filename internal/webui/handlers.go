@@ -50,11 +50,19 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Preserve the existing auth token when the client sends an empty one
-	// (the GET redacts it, so a round-trip edit must not wipe it).
-	if incoming.WebUI.AuthToken == "" {
-		if existing, err := config.Load(s.configPath); err == nil {
+	// The browser form only edits account/sync fields, not the web_ui server
+	// settings. Carry the existing web_ui fields forward when the client omits
+	// them (zero value = "unchanged"), so saving from the UI can never disable
+	// the UI or wipe its listen address / auth token and lock the operator out.
+	if existing, err := config.Load(s.configPath); err == nil {
+		if incoming.WebUI.AuthToken == "" {
 			incoming.WebUI.AuthToken = existing.WebUI.AuthToken
+		}
+		if !incoming.WebUI.Enabled {
+			incoming.WebUI.Enabled = existing.WebUI.Enabled
+		}
+		if incoming.WebUI.ListenAddr == "" {
+			incoming.WebUI.ListenAddr = existing.WebUI.ListenAddr
 		}
 	}
 
@@ -77,13 +85,19 @@ func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, s.status())
 }
 
-// handleSync triggers a one-off sync pass.
+// handleSync triggers a one-off sync pass. Concurrent invocations are rejected
+// (409) rather than allowed to race on the same calendars.
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
-	if s.sync == nil {
+	if s.syncFn == nil {
 		s.writeError(w, http.StatusServiceUnavailable, "sync not available in this mode")
 		return
 	}
-	if err := s.sync(); err != nil {
+	if !s.syncing.TryLock() {
+		s.writeError(w, http.StatusConflict, "a sync is already running")
+		return
+	}
+	defer s.syncing.Unlock()
+	if err := s.syncFn(); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "sync failed: "+err.Error())
 		return
 	}
@@ -99,7 +113,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Conservative CSP: everything is inline and self-hosted; block external
 	// loads entirely.
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if _, err := w.Write(indexHTML); err != nil {
 		s.logger.Error("webui: writing index", "error", err)

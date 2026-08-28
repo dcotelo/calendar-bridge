@@ -148,6 +148,13 @@ func (c *Config) Save(path string) error {
 		_ = tmp.Close()
 		return fmt.Errorf("writing temp config file: %w", err)
 	}
+	// fsync the temp file before the rename so the new contents are durably on
+	// disk first; otherwise a crash right after rename could leave the config
+	// entry pointing at a file whose data never reached the platter.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("syncing temp config file: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("closing temp config file: %w", err)
 	}
