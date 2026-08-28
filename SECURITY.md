@@ -30,7 +30,11 @@ prioritized immediately.
 Given what calendar-bridge does, the most relevant vulnerability classes are:
 
 - **Credential handling** — anything that could leak an OAuth token, client
-  secret, or credentials file path (`internal/googleauth`).
+  secret, credentials file path, or the webhook verification token
+  (`internal/googleauth`, `internal/webhook`). Note: calendar-bridge warns at
+  startup if a credentials or token file is group/world-readable; report any
+  path where a secret is logged, transmitted, or persisted with loose
+  permissions.
 - **Data integrity / cross-account leakage** — anything that could cause
   calendar-bridge to overwrite, delete, or expose a real user event it
   doesn't own, or leak event content across account boundaries when only

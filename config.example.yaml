@@ -23,3 +23,15 @@ accounts:
 poll_interval: 5m
 lookahead_days: 30
 block_title: "Busy (calendar-bridge)"
+
+# Optional: near-real-time sync via Google Calendar push notifications
+# (events.watch). Opt-in — leave disabled to poll only (the default). Requires
+# a publicly reachable HTTPS endpoint routing to listen_addr. See docs/webhooks.md.
+#
+# webhook:
+#   enabled: true
+#   public_url: https://cb.example.com   # must be https; receiver lives at /webhook
+#   listen_addr: ":8080"                 # local bind, behind a TLS-terminating proxy
+#   verification_token: "CHANGE-ME-long-random-secret"  # secret; authenticates notifications
+#   channel_ttl: "24h"                   # watch channel lifetime; renewed ahead of expiry
+#   debounce_interval: "5s"              # coalesce a burst of changes into one sync

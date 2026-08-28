@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -27,7 +28,17 @@ var Scopes = []string{calendar.CalendarEventsScope}
 //
 // If tokenFile does not exist, Client returns ErrNeedsAuth so the caller can
 // run the interactive authorization flow (see Authorize).
-func Client(ctx context.Context, credentialsFile, tokenFile string) (*calendar.Service, error) {
+//
+// logger, if non-nil, is used to warn when a credentials or token file has
+// insecure (group/world-accessible) permissions. Pass nil to use the default
+// logger.
+func Client(ctx context.Context, credentialsFile, tokenFile string, logger *slog.Logger) (*calendar.Service, error) {
+	// Warn loudly if either secret file is readable beyond its owner. These
+	// are live credentials; the read path (run/sync-once) never rewrites them,
+	// so this is the only place a loosened credentials/token file gets caught.
+	warnIfInsecurePerms(logger, "credentials", credentialsFile)
+	warnIfInsecurePerms(logger, "token", tokenFile)
+
 	// #nosec G304 -- credentialsFile comes from the user's own config.yaml,
 	// not untrusted external input.
 	credBytes, err := os.ReadFile(credentialsFile)
@@ -61,6 +72,8 @@ var ErrNeedsAuth = fmt.Errorf("account not yet authorized, run: calendar-bridge 
 // the resulting token to tokenFile. Intended to be invoked from a CLI
 // subcommand, not from the sync loop.
 func Authorize(ctx context.Context, credentialsFile, tokenFile string) error {
+	warnIfInsecurePerms(nil, "credentials", credentialsFile)
+
 	// #nosec G304 -- credentialsFile comes from the user's own config.yaml,
 	// not untrusted external input.
 	credBytes, err := os.ReadFile(credentialsFile)

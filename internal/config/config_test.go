@@ -132,3 +132,85 @@ block_title: "Do Not Disturb"
 		t.Errorf("BlockTitle = %q, want %q", cfg.BlockTitle, "Do Not Disturb")
 	}
 }
+
+const twoAccounts = `
+accounts:
+  - name: personal
+    credentials_file: a.json
+    token_file: a-tok.json
+    calendar_id: primary
+  - name: work
+    credentials_file: b.json
+    token_file: b-tok.json
+    calendar_id: primary
+`
+
+func TestLoad_WebhookEnabledAppliesDefaults(t *testing.T) {
+	path := writeTempConfig(t, twoAccounts+`
+webhook:
+  enabled: true
+  public_url: https://cb.example.com
+  verification_token: super-secret
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	if !cfg.Webhook.Enabled {
+		t.Fatal("Webhook.Enabled = false, want true")
+	}
+	if cfg.Webhook.ListenAddr != ":8080" {
+		t.Errorf("default ListenAddr = %q, want :8080", cfg.Webhook.ListenAddr)
+	}
+	if cfg.Webhook.ChannelTTL != "24h" {
+		t.Errorf("default ChannelTTL = %q, want 24h", cfg.Webhook.ChannelTTL)
+	}
+	if cfg.Webhook.DebounceInterval != "5s" {
+		t.Errorf("default DebounceInterval = %q, want 5s", cfg.Webhook.DebounceInterval)
+	}
+}
+
+func TestLoad_WebhookRequiresHTTPSPublicURL(t *testing.T) {
+	path := writeTempConfig(t, twoAccounts+`
+webhook:
+  enabled: true
+  public_url: http://insecure.example.com
+  verification_token: super-secret
+`)
+	if _, err := Load(path); err == nil {
+		t.Error("Load() error = nil, want error for non-https webhook.public_url")
+	}
+}
+
+func TestLoad_WebhookRequiresToken(t *testing.T) {
+	path := writeTempConfig(t, twoAccounts+`
+webhook:
+  enabled: true
+  public_url: https://cb.example.com
+`)
+	if _, err := Load(path); err == nil {
+		t.Error("Load() error = nil, want error for missing webhook.verification_token")
+	}
+}
+
+func TestLoad_WebhookRequiresPublicURL(t *testing.T) {
+	path := writeTempConfig(t, twoAccounts+`
+webhook:
+  enabled: true
+  verification_token: super-secret
+`)
+	if _, err := Load(path); err == nil {
+		t.Error("Load() error = nil, want error for missing webhook.public_url")
+	}
+}
+
+func TestLoad_WebhookDisabledSkipsValidation(t *testing.T) {
+	// A disabled webhook block with no fields must not trigger validation.
+	path := writeTempConfig(t, twoAccounts+`
+webhook:
+  enabled: false
+`)
+	if _, err := Load(path); err != nil {
+		t.Errorf("Load() error = %v, want nil (disabled webhook skips validation)", err)
+	}
+}

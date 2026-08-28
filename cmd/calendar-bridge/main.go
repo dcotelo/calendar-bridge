@@ -8,14 +8,19 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
+
+	calendar "google.golang.org/api/calendar/v3"
 
 	"github.com/dcotelo/calendar-bridge/internal/config"
 	"github.com/dcotelo/calendar-bridge/internal/googleauth"
 	"github.com/dcotelo/calendar-bridge/internal/sync"
+	"github.com/dcotelo/calendar-bridge/internal/webhook"
 )
 
 // syncCycleTimeout bounds a single SyncOnce pass so a hung Google API call
@@ -110,17 +115,24 @@ func runAuth(args []string) {
 	}
 }
 
-func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*sync.Engine, error) {
+func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*sync.Engine, map[string]*calendar.Service, error) {
 	accounts := make([]sync.Account, 0, len(cfg.Accounts))
+	services := make(map[string]*calendar.Service, len(cfg.Accounts))
 	for _, a := range cfg.Accounts {
-		svc, err := googleauth.Client(ctx, a.CredentialsFile, a.TokenFile)
+		svc, err := googleauth.Client(ctx, a.CredentialsFile, a.TokenFile, logger)
 		if err != nil {
-			return nil, fmt.Errorf("account %s: %w", a.Name, err)
+			return nil, nil, fmt.Errorf("account %s: %w", a.Name, err)
 		}
+		services[a.Name] = svc
 		accounts = append(accounts, sync.Account{
 			Name:       a.Name,
 			CalendarID: a.CalendarID,
-			Client:     sync.NewGoogleCalendarClient(svc),
+			Client: sync.NewRetryingClient(
+				sync.NewGoogleCalendarClient(svc),
+				sync.DefaultRetryPolicy(),
+				logger,
+				a.Name,
+			),
 		})
 	}
 
@@ -129,7 +141,7 @@ func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		BlockTitle:    cfg.BlockTitle,
 		LookaheadDays: cfg.LookaheadDays,
 		Logger:        logger,
-	}, nil
+	}, services, nil
 }
 
 func runSyncOnce(args []string) {
@@ -140,7 +152,7 @@ func runSyncOnce(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	engine, err := buildEngine(ctx, cfg, logger)
+	engine, _, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "setting up: %v\n", err)
 		os.Exit(1)
@@ -172,7 +184,7 @@ func runSync(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	engine, err := buildEngine(ctx, cfg, logger)
+	engine, services, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "setting up: %v\n", err)
 		os.Exit(1)
@@ -184,7 +196,22 @@ func runSync(args []string) {
 		os.Exit(1)
 	}
 
-	logger.Info("starting sync loop", "interval", interval, "accounts", len(cfg.Accounts))
+	// Optional push path: when webhook is enabled, start the receiver and the
+	// watch-channel manager. Push notifications trigger the same SyncOnce as
+	// polling — polling stays on as a safety net so a missed/late notification
+	// never means a permanently-missed change.
+	var pushTrigger <-chan struct{}
+	if cfg.Webhook.Enabled {
+		trigger, err := startWebhook(ctx, cfg, services, logger)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "starting webhook: %v\n", err)
+			os.Exit(1)
+		}
+		pushTrigger = trigger
+		logger.Info("push notifications enabled", "listen", cfg.Webhook.ListenAddr, "public_url", cfg.Webhook.PublicURL)
+	}
+
+	logger.Info("starting sync loop", "interval", interval, "accounts", len(cfg.Accounts), "push", cfg.Webhook.Enabled)
 	for {
 		select {
 		case <-ctx.Done():
@@ -202,11 +229,65 @@ func runSync(args []string) {
 			logger.Info("sync pass complete")
 		}
 
+		// Wait for the next trigger: a poll tick, a debounced push
+		// notification, or shutdown — whichever comes first.
 		select {
 		case <-ctx.Done():
 			logger.Info("received shutdown signal, exiting")
 			return
+		case <-pushTrigger:
+			logger.Info("sync triggered by push notification")
 		case <-time.After(interval):
 		}
 	}
+}
+
+// startWebhook starts the push-notification receiver HTTP server and the
+// watch-channel manager, returning a channel that fires (debounced) whenever a
+// calendar change notification arrives. Both the server and manager stop when
+// ctx is cancelled.
+func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*calendar.Service, logger *slog.Logger) (<-chan struct{}, error) {
+	debounceInterval, err := time.ParseDuration(cfg.Webhook.DebounceInterval)
+	if err != nil {
+		return nil, fmt.Errorf("invalid webhook.debounce_interval %q: %w", cfg.Webhook.DebounceInterval, err)
+	}
+	ttl, err := time.ParseDuration(cfg.Webhook.ChannelTTL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid webhook.channel_ttl %q: %w", cfg.Webhook.ChannelTTL, err)
+	}
+
+	debouncer := webhook.NewDebouncer(debounceInterval)
+	receiver := webhook.NewReceiver(cfg.Webhook.VerificationToken, debouncer, logger)
+
+	mux := http.NewServeMux()
+	mux.Handle("/webhook", receiver)
+	srv := &http.Server{
+		Addr:              cfg.Webhook.ListenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("webhook server stopped", "error", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	// Watch-channel manager: register/renew a channel per account calendar.
+	watcher := webhook.NewGoogleWatcher(services)
+	callbackURL := strings.TrimRight(cfg.Webhook.PublicURL, "/") + "/webhook"
+	mgr := webhook.NewManager(watcher, callbackURL, cfg.Webhook.VerificationToken, ttl, logger)
+
+	targets := make([]webhook.Target, 0, len(cfg.Accounts))
+	for _, a := range cfg.Accounts {
+		targets = append(targets, webhook.Target{Account: a.Name, CalendarID: a.CalendarID})
+	}
+	go func() { _ = mgr.Run(ctx, targets) }()
+
+	return debouncer.C, nil
 }
