@@ -169,8 +169,16 @@ func hostIsLoopbackAuthority(host string) bool {
 	h, _, err := net.SplitHostPort(host)
 	if err != nil {
 		// No port present. Strip brackets from a bare IPv6 literal like "[::1]"
-		// so net.ParseIP can recognize it.
-		h = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+		// so net.ParseIP can recognize it — but only when balanced, so an
+		// unbalanced "[::1" or "::1]" is rejected rather than silently accepted.
+		switch {
+		case strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]"):
+			h = host[1 : len(host)-1]
+		case strings.ContainsAny(host, "[]"):
+			return false // unbalanced brackets
+		default:
+			h = host
+		}
 	}
 	if h == "localhost" {
 		return true

@@ -352,6 +352,33 @@ func TestPutConfig_RejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestHostIsLoopbackAuthority(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1:8090", true},
+		{"127.0.0.1", true},
+		{"localhost:8090", true},
+		{"localhost", true},
+		{"[::1]:8090", true},
+		{"[::1]", true},
+		{"192.168.1.5:8090", false},
+		{"attacker.example:8090", false},
+		{"", false},
+		{"[::1", false}, // unbalanced
+		{"::1]", false}, // unbalanced
+		{"[::1]extra", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.host, func(t *testing.T) {
+			if got := hostIsLoopbackAuthority(tc.host); got != tc.want {
+				t.Errorf("hostIsLoopbackAuthority(%q) = %v, want %v", tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCSRF_RejectsReboundHost(t *testing.T) {
 	// No-token loopback mode: a request with a public Host (as in a DNS
 	// rebinding attack) must be rejected even though Origin matches Host.
