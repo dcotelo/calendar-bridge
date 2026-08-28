@@ -168,7 +168,9 @@ func hostIsLoopbackAuthority(host string) bool {
 	}
 	h, _, err := net.SplitHostPort(host)
 	if err != nil {
-		h = host // no port present
+		// No port present. Strip brackets from a bare IPv6 literal like "[::1]"
+		// so net.ParseIP can recognize it.
+		h = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 	}
 	if h == "localhost" {
 		return true
