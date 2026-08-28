@@ -24,6 +24,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -54,6 +55,7 @@ type Status struct {
 type Server struct {
 	configPath string
 	authToken  string
+	listenAddr string // configured bind authority, used to reject rebinding
 	logger     *slog.Logger
 	syncFn     SyncFunc
 	status     StatusFunc
@@ -99,6 +101,7 @@ func New(opts Options) (*Server, error) {
 	return &Server{
 		configPath: opts.ConfigPath,
 		authToken:  opts.AuthToken,
+		listenAddr: opts.ListenAddr,
 		logger:     logger,
 		syncFn:     opts.Sync,
 		status:     opts.Status,
@@ -132,6 +135,16 @@ func (s *Server) Handler() http.Handler {
 // whose Origin is set and doesn't match the request host.
 func (s *Server) csrfGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// DNS-rebinding defense: in the default loopback+no-token mode, an
+		// attacker page on a rebound hostname can send matching Origin/Host to
+		// the loopback listener. Require the request Host to be a loopback
+		// authority so a rebound public hostname is rejected. When an auth
+		// token is configured (the only way to bind non-loopback), the token
+		// is the guard and we don't constrain Host.
+		if s.authToken == "" && !hostIsLoopbackAuthority(r.Host) {
+			http.Error(w, "unexpected Host", http.StatusForbidden)
+			return
+		}
 		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
 			http.Error(w, "cross-site request rejected", http.StatusForbidden)
 			return
@@ -144,6 +157,24 @@ func (s *Server) csrfGuard(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hostIsLoopbackAuthority reports whether an HTTP Host header names the local
+// loopback interface (127.0.0.0/8, ::1, or "localhost"), rejecting any public
+// hostname a DNS-rebinding attacker might resolve to the loopback listener.
+func hostIsLoopbackAuthority(host string) bool {
+	if host == "" {
+		return false
+	}
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		h = host // no port present
+	}
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // authMiddleware enforces the Bearer token (when configured) in constant time.

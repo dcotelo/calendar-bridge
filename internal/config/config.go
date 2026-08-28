@@ -217,8 +217,15 @@ func (c *Config) Validate() error {
 	// `run` at startup. Empty poll_interval is allowed here — applyDefaults
 	// fills it after Load.
 	if c.PollInterval != "" {
-		if _, err := time.ParseDuration(c.PollInterval); err != nil {
+		d, err := time.ParseDuration(c.PollInterval)
+		if err != nil {
 			return fmt.Errorf("poll_interval %q is not a valid duration: %w", c.PollInterval, err)
+		}
+		// time.ParseDuration accepts "0s" and negatives; runSync passes this to
+		// time.After, which fires immediately for non-positive values and would
+		// spin a tight sync loop hammering the Calendar API.
+		if d <= 0 {
+			return fmt.Errorf("poll_interval must be positive, got %q", c.PollInterval)
 		}
 	}
 	if c.LookaheadDays < 0 {

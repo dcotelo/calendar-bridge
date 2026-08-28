@@ -106,6 +106,8 @@ func TestValidate_RejectsBadPollIntervalAndLookahead(t *testing.T) {
 	}{
 		{"valid", func(c *Config) {}, false},
 		{"bad poll_interval", func(c *Config) { c.PollInterval = "banana" }, true},
+		{"zero poll_interval", func(c *Config) { c.PollInterval = "0s" }, true},
+		{"negative poll_interval", func(c *Config) { c.PollInterval = "-1s" }, true},
 		{"empty poll_interval ok", func(c *Config) { c.PollInterval = "" }, false},
 		{"negative lookahead", func(c *Config) { c.LookaheadDays = -1 }, true},
 		{"zero lookahead ok", func(c *Config) { c.LookaheadDays = 0 }, false},

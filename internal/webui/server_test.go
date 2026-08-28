@@ -71,6 +71,9 @@ func req(t *testing.T, method, target, token, body string) *http.Request {
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
+	// Default to a loopback Host so requests pass the DNS-rebinding guard;
+	// tests that exercise the guard set r.Host explicitly.
+	r.Host = "127.0.0.1:8090"
 	return r
 }
 
@@ -346,6 +349,21 @@ func TestPutConfig_RejectsUnknownField(t *testing.T) {
 	}
 	if cfg, err := config.Load(path); err != nil || len(cfg.Accounts) != 2 {
 		t.Error("config changed after unknown-field PUT; want unchanged")
+	}
+}
+
+func TestCSRF_RejectsReboundHost(t *testing.T) {
+	// No-token loopback mode: a request with a public Host (as in a DNS
+	// rebinding attack) must be rejected even though Origin matches Host.
+	srv := newTestServer(t, "")
+	r := req(t, http.MethodGet, "/api/config", "", "")
+	r.Host = "attacker.example:8090"
+	r.Header.Set("Origin", "http://attacker.example:8090")
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("rebound-host status = %d, want 403", w.Code)
 	}
 }
 
