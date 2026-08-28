@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 )
 
@@ -47,9 +48,12 @@ func warnIfInsecurePerms(logger *slog.Logger, kind, path string) {
 		logger = slog.Default()
 	}
 	if mode, insecure := checkSecretPerms(path); insecure {
+		// Log only the base name, not the full path: in shared/aggregated logs
+		// the full path would disclose the exact on-disk location of the OAuth
+		// credentials/token. The base name plus kind is enough to act on.
 		logger.Warn("secret file has insecure permissions; restrict it to owner-only (chmod 600)",
 			"kind", kind,
-			"path", path,
+			"file", filepath.Base(path),
 			"mode", mode.String(),
 			"recommended", "-rw-------",
 		)

@@ -214,3 +214,31 @@ webhook:
 		t.Errorf("Load() error = %v, want nil (disabled webhook skips validation)", err)
 	}
 }
+
+func TestLoad_WebhookPublicURLValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"valid https", "https://cb.example.com", false},
+		{"valid https with path", "https://cb.example.com/hook", false},
+		{"http rejected", "http://cb.example.com", true},
+		{"missing host", "https://", true},
+		{"user info rejected", "https://user:pass@cb.example.com", true},
+		{"query rejected", "https://cb.example.com/?token=abc", true},
+		{"fragment rejected", "https://cb.example.com/#frag", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTempConfig(t, twoAccounts+"\nwebhook:\n  enabled: true\n  verification_token: secret\n  public_url: "+tc.url+"\n")
+			_, err := Load(path)
+			if tc.wantErr && err == nil {
+				t.Errorf("Load() error = nil, want error for public_url %q", tc.url)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Load() error = %v, want nil for public_url %q", err, tc.url)
+			}
+		})
+	}
+}

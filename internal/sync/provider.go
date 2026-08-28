@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -41,7 +42,13 @@ type TimeSpan struct {
 	TimeZone string
 }
 
-// Equal reports whether two spans denote the same instant/date and zone.
+// Equal reports whether two spans are field-for-field identical (same
+// DateTime, Date, and TimeZone strings). It is a cheap structural comparison,
+// not a semantic instant comparison: two RFC3339 values that denote the same
+// instant with different UTC offsets are treated as unequal. That is
+// intentional and sufficient here — calendar-bridge copies a source event's
+// exact start/end/zone strings onto its block, so an unchanged source
+// round-trips to byte-identical fields, and any real edit changes them.
 func (s TimeSpan) Equal(o TimeSpan) bool {
 	return s.DateTime == o.DateTime && s.Date == o.Date && s.TimeZone == o.TimeZone
 }
@@ -62,6 +69,22 @@ type Ownership struct {
 
 // IsOwned reports whether this metadata marks a calendar-bridge-owned block.
 func (o Ownership) IsOwned() bool { return o.Owner == ownerValue }
+
+// ErrNotOwned is returned by provider write operations when they are asked to
+// create, update, or delete a block whose ownership metadata is missing or
+// incomplete. It exists to enforce, at every provider boundary, the invariant
+// that calendar-bridge never writes or removes anything it cannot prove it
+// owns — so a future non-Google Provider (or a direct caller bypassing the
+// engine) cannot accidentally clobber a real user event.
+var ErrNotOwned = errors.New("refusing to write a block that is not calendar-bridge-owned (missing owner tag or source identity)")
+
+// validForWrite reports whether this ownership is safe to act on: it must carry
+// the calendar-bridge owner tag AND a complete source identity (account +
+// event ID). Anything less means we can neither prove ownership nor match the
+// block back to a real source, so writing/deleting on it is unsafe.
+func (o Ownership) validForWrite() bool {
+	return o.IsOwned() && o.SourceAccount != "" && o.SourceEventID != ""
+}
 
 // Event is the provider-neutral event the sync engine reasons about.
 type Event struct {
@@ -91,13 +114,23 @@ type Event struct {
 //     ownership, not merely a property-filter match, to avoid ever returning
 //     a real user event.
 //   - InsertBlock creates a new owned busy block for the given source over
-//     the given span, with the configured title.
+//     the given span, with the configured title. Implementations MUST reject
+//     (with ErrNotOwned) an Ownership that is not owner-tagged or lacks a
+//     source account/event ID — calendar-bridge must never create a busy block
+//     it cannot later identify and clean up.
 //   - UpdateBlockTime moves an existing owned block (identified and carried
 //     by block, which retains its ownership metadata) to a new span.
-//     Implementations MUST preserve the block's ownership tagging and title;
-//     for providers whose update is a full replace (e.g. Google), send the
-//     complete block, not just the new times.
-//   - DeleteBlock removes an owned block by ID.
+//     Implementations MUST reject (with ErrNotOwned) a block that is not
+//     owner-tagged with a complete source identity, and MUST preserve the
+//     block's ownership tagging and title; for providers whose update is a
+//     full replace (e.g. Google), send the complete block, not just the new
+//     times.
+//   - DeleteBlock removes an owned block by ID. The caller MUST pass the ID of
+//     a block it has already confirmed is calendar-bridge-owned — the engine
+//     only ever deletes blocks it fetched and matched via isOwnedBlock, so an
+//     untagged real event is never reached here. Ownership is enforced on the
+//     insert/update paths (which carry the full event and its tags); delete
+//     receives only an opaque ID, so its safety rests on the caller.
 type Provider interface {
 	ListEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]Event, error)
 	FindOwnedBlock(ctx context.Context, calendarID, srcAccount, srcEventID string) (*Event, error)

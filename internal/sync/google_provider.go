@@ -97,6 +97,12 @@ func (g *googleProvider) FindOwnedBlock(ctx context.Context, calendarID, srcAcco
 }
 
 func (g *googleProvider) InsertBlock(ctx context.Context, calendarID, title string, start, end TimeSpan, own Ownership) (*Event, error) {
+	// Never create a block we can't later identify and GC. This mirrors the
+	// .coderabbit.yaml invariant for internal/sync and is enforced here so a
+	// direct Provider caller can't bypass the bridge's check.
+	if !own.validForWrite() {
+		return nil, ErrNotOwned
+	}
 	block := &calendar.Event{
 		Summary:      title,
 		Start:        spanToGoogle(start),
@@ -128,6 +134,12 @@ func (g *googleProvider) UpdateBlockTime(ctx context.Context, calendarID string,
 	// times, and update — preserving every other field. This is exactly the
 	// invariant the engine's original ensureBlock relied on.
 	own := block.Ownership
+	// Refuse to update anything not provably ours with a complete source
+	// identity: without it we can't safely locate the block and could target a
+	// real event with empty filter values.
+	if !own.validForWrite() {
+		return nil, ErrNotOwned
+	}
 	full, err := g.client.FindBlockBySource(ctx, calendarID, own.SourceAccount, own.SourceEventID)
 	if err != nil {
 		return nil, err
@@ -148,5 +160,7 @@ func (g *googleProvider) UpdateBlockTime(ctx context.Context, calendarID string,
 }
 
 func (g *googleProvider) DeleteBlock(ctx context.Context, calendarID, blockID string) error {
+	// Ownership is guaranteed by the caller (see Provider.DeleteBlock): the
+	// engine only ever deletes blocks it already matched via isOwnedBlock.
 	return g.client.DeleteEvent(ctx, calendarID, blockID)
 }

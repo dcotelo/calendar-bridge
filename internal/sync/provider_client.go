@@ -75,6 +75,12 @@ func (c *providerClient) FindBlockBySource(ctx context.Context, calendarID, srcA
 
 func (c *providerClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
 	own := ownershipFromGoogle(ev)
+	// Never forward an untagged event to InsertBlock: that would create an
+	// opaque busy block the engine can't later identify or GC. (googleProvider
+	// re-checks too; this fails fast at the bridge.)
+	if !own.validForWrite() {
+		return nil, ErrNotOwned
+	}
 	created, err := c.p.InsertBlock(ctx, calendarID, c.title, spanFromGoogle(ev.Start), spanFromGoogle(ev.End), own)
 	if err != nil || created == nil {
 		return nil, err
@@ -83,7 +89,12 @@ func (c *providerClient) InsertEvent(ctx context.Context, calendarID string, ev 
 }
 
 func (c *providerClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
-	updated, err := c.p.UpdateBlockTime(ctx, calendarID, eventFromGoogle(ev), spanFromGoogle(ev.Start), spanFromGoogle(ev.End))
+	block := eventFromGoogle(ev)
+	// Refuse to update anything not provably ours (owner tag + source identity).
+	if !block.Ownership.validForWrite() {
+		return nil, ErrNotOwned
+	}
+	updated, err := c.p.UpdateBlockTime(ctx, calendarID, block, spanFromGoogle(ev.Start), spanFromGoogle(ev.End))
 	if err != nil || updated == nil {
 		return nil, err
 	}

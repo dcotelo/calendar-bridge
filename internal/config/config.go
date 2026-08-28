@@ -4,8 +4,8 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -163,9 +163,25 @@ func (c *Config) Validate() error {
 		if c.Webhook.PublicURL == "" {
 			return fmt.Errorf("webhook.public_url is required when webhook.enabled is true")
 		}
-		if !strings.HasPrefix(c.Webhook.PublicURL, "https://") {
-			// Google refuses to deliver push notifications to non-HTTPS URLs.
-			return fmt.Errorf("webhook.public_url must be an https:// URL, got %q", c.Webhook.PublicURL)
+		u, err := url.Parse(c.Webhook.PublicURL)
+		if err != nil {
+			return fmt.Errorf("webhook.public_url is not a valid URL: %w", err)
+		}
+		// Google refuses to deliver push notifications to non-HTTPS URLs.
+		if u.Scheme != "https" {
+			return fmt.Errorf("webhook.public_url must use the https scheme, got %q", u.Scheme)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("webhook.public_url must include a host")
+		}
+		// Reject embedded credentials and query/fragment: a public_url is logged
+		// operationally, so it must not carry secrets, and Google's callback is a
+		// plain path — query/fragment/userinfo have no legitimate use here.
+		if u.User != nil {
+			return fmt.Errorf("webhook.public_url must not contain user info (credentials)")
+		}
+		if u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("webhook.public_url must not contain a query string or fragment")
 		}
 		if c.Webhook.VerificationToken == "" {
 			return fmt.Errorf("webhook.verification_token is required when webhook.enabled is true (used to reject forged notifications)")
