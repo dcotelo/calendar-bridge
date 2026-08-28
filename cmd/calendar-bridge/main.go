@@ -5,9 +5,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -262,12 +264,20 @@ func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*
 	mux := http.NewServeMux()
 	mux.Handle("/webhook", receiver)
 	srv := &http.Server{
-		Addr:              cfg.Webhook.ListenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// Bind synchronously so a failure (e.g. the port is already in use) is
+	// reported to the caller instead of being swallowed in a goroutine — which
+	// would otherwise leave the process polling and registering Google watch
+	// channels whose callbacks can never be delivered.
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", cfg.Webhook.ListenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("binding webhook listener on %s: %w", cfg.Webhook.ListenAddr, err)
+	}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("webhook server stopped", "error", err)
 		}
 	}()

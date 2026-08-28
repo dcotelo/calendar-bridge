@@ -38,7 +38,7 @@ cannot create a divergent way to mutate calendars.
 
 ## Components (all in `internal/webhook`)
 
-```
+```text
 Google ──POST /webhook──▶ Receiver ──Notify()──▶ Debouncer ──C──▶ run loop ──▶ SyncOnce
                              ▲                                         │
                              │                                         │
