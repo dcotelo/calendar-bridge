@@ -125,11 +125,11 @@ type Event struct {
 //     block's ownership tagging and title; for providers whose update is a
 //     full replace (e.g. Google), send the complete block, not just the new
 //     times.
-//   - DeleteBlock removes an owned block. It receives the block's ID and
-//     ownership identity; the implementation MUST verify the target is
-//     calendar-bridge-owned (re-reading it from the provider) before deleting,
-//     and reject an untagged or missing target — an untagged real event must
-//     never be deletable through this path, regardless of caller discipline.
+//   - DeleteBlock removes an owned block, identified by ID. The implementation
+//     MUST re-read the target and reject an untagged (non-owned) event with
+//     ErrNotOwned rather than deleting it — an untagged real event must never
+//     be deletable through this path, regardless of caller discipline. A
+//     target that no longer exists is treated as a successful no-op.
 type Provider interface {
 	ListEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]Event, error)
 	FindOwnedBlock(ctx context.Context, calendarID, srcAccount, srcEventID string) (*Event, error)

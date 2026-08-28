@@ -178,6 +178,61 @@ func (f *flakyClient) GetEvent(ctx context.Context, calendarID, eventID string) 
 	return f.inner.GetEvent(ctx, calendarID, eventID)
 }
 
+// getFlakyClient makes GetEvent fail transiently the first failFirst times.
+type getFlakyClient struct {
+	inner    CalendarClient
+	failN    int
+	code     int
+	getCalls int
+}
+
+func (g *getFlakyClient) ListEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]*calendar.Event, error) {
+	return g.inner.ListEvents(ctx, calendarID, timeMin, timeMax)
+}
+func (g *getFlakyClient) FindBlockBySource(ctx context.Context, calendarID, srcAccount, srcEventID string) (*calendar.Event, error) {
+	return g.inner.FindBlockBySource(ctx, calendarID, srcAccount, srcEventID)
+}
+func (g *getFlakyClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
+	return g.inner.InsertEvent(ctx, calendarID, ev)
+}
+func (g *getFlakyClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
+	return g.inner.UpdateEvent(ctx, calendarID, eventID, ev)
+}
+func (g *getFlakyClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
+	return g.inner.DeleteEvent(ctx, calendarID, eventID)
+}
+func (g *getFlakyClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
+	g.getCalls++
+	if g.getCalls <= g.failN {
+		return nil, &googleapi.Error{Code: g.code}
+	}
+	return g.inner.GetEvent(ctx, calendarID, eventID)
+}
+
+func TestRetryingClient_RetriesGetEvent(t *testing.T) {
+	inner := newFakeCalendarClient()
+	flaky := &getFlakyClient{inner: inner, failN: 2, code: http.StatusServiceUnavailable}
+	c := NewRetryingClient(flaky, fastPolicy(4), newTestLogger(), "test")
+	if _, err := c.GetEvent(context.Background(), "primary", "id"); err != nil {
+		t.Fatalf("GetEvent error = %v, want nil after retries", err)
+	}
+	if flaky.getCalls != 3 {
+		t.Errorf("GetEvent calls = %d, want 3 (2 transient failures then success)", flaky.getCalls)
+	}
+}
+
+func TestRetryingClient_GetEventExhaustsAttempts(t *testing.T) {
+	inner := newFakeCalendarClient()
+	flaky := &getFlakyClient{inner: inner, failN: 99, code: http.StatusTooManyRequests}
+	c := NewRetryingClient(flaky, fastPolicy(3), newTestLogger(), "test")
+	if _, err := c.GetEvent(context.Background(), "primary", "id"); err == nil {
+		t.Fatal("GetEvent error = nil, want error after exhausting attempts")
+	}
+	if flaky.getCalls != 3 {
+		t.Errorf("GetEvent calls = %d, want 3 (MaxAttempts)", flaky.getCalls)
+	}
+}
+
 func (f *flakyClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
 	return f.inner.InsertEvent(ctx, calendarID, ev)
 }

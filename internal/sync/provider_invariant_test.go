@@ -171,6 +171,15 @@ func TestGoogleProvider_PropagatesClientErrors(t *testing.T) {
 			},
 		},
 		{
+			name: "DeleteBlock GetEvent error",
+			set:  func(f *fakeCalendarClient) { f.failGet = sentinel; f.failDelete = errors.New("must not be reached") },
+			call: func(p Provider, f *fakeCalendarClient) error {
+				// GetEvent fails first, so DeleteBlock must surface that error
+				// and never call DeleteEvent.
+				return p.DeleteBlock(context.Background(), "primary", "blk")
+			},
+		},
+		{
 			name: "UpdateBlockTime",
 			set:  func(f *fakeCalendarClient) { f.failUpdate = sentinel },
 			call: func(p Provider, f *fakeCalendarClient) error {
