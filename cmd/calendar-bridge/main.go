@@ -273,7 +273,10 @@ func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*
 	}()
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// ctx is already cancelled (that's what unblocked us); derive a fresh
+		// context that ignores that cancellation so Shutdown gets the full
+		// grace period to drain instead of aborting immediately.
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()

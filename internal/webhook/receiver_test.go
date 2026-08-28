@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,7 +21,7 @@ type countingNotifier struct{ n atomic.Int64 }
 func (c *countingNotifier) Notify() { c.n.Add(1) }
 
 func postWithHeaders(h map[string]string) *http.Request {
-	req := httptest.NewRequest(http.MethodPost, "/webhook", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/webhook", nil)
 	for k, v := range h {
 		req.Header.Set(k, v)
 	}
@@ -48,7 +49,7 @@ func TestReceiver_RejectsBadToken(t *testing.T) {
 func TestReceiver_RejectsNonPost(t *testing.T) {
 	rec := NewReceiver("s3cret", &countingNotifier{}, testLogger())
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/webhook", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/webhook", nil)
 	rec.ServeHTTP(w, req)
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", w.Code)
