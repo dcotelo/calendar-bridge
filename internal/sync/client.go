@@ -2,10 +2,12 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // CalendarClient is the minimal subset of the Google Calendar API that the
@@ -24,6 +26,11 @@ type CalendarClient interface {
 	// with the given source account/event via the sourceAccountKey and
 	// sourceEventKey private extended properties, or nil if none exists.
 	FindBlockBySource(ctx context.Context, calendarID, srcAccount, srcEventID string) (*calendar.Event, error)
+
+	// GetEvent returns the event with the given ID on calendarID, or nil if it
+	// does not exist. Used to re-verify a block's ownership tag immediately
+	// before deletion.
+	GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error)
 
 	// InsertEvent creates ev on calendarID.
 	InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error)
@@ -100,6 +107,18 @@ func (c *googleCalendarClient) FindBlockBySource(ctx context.Context, calendarID
 
 func (c *googleCalendarClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
 	return c.svc.Events.Insert(calendarID, ev).Context(ctx).Do()
+}
+
+func (c *googleCalendarClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
+	ev, err := c.svc.Events.Get(calendarID, eventID).Context(ctx).Do()
+	if err != nil {
+		var apiErr *googleapi.Error
+		if errors.As(err, &apiErr) && apiErr.Code == 404 {
+			return nil, nil // treat "gone" as no event, not an error
+		}
+		return nil, err
+	}
+	return ev, nil
 }
 
 func (c *googleCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {

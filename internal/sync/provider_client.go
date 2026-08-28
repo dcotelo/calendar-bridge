@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
@@ -103,4 +104,14 @@ func (c *providerClient) UpdateEvent(ctx context.Context, calendarID, eventID st
 
 func (c *providerClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
 	return c.p.DeleteBlock(ctx, calendarID, eventID)
+}
+
+// GetEvent is not supported through the Provider bridge: the neutral Provider
+// interface has no get-by-ID operation (blocks are located by source identity
+// via FindOwnedBlock). The engine never calls GetEvent on an account client —
+// only googleProvider.DeleteBlock does, and it calls it on its own inner
+// CalendarClient, not on this bridge. Returning an explicit error keeps the
+// CalendarClient contract satisfied without pretending to support it.
+func (c *providerClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
+	return nil, fmt.Errorf("providerClient: GetEvent is not supported through the Provider bridge")
 }

@@ -27,6 +27,7 @@ type fakeCalendarClient struct {
 	failInsert error
 	failUpdate error
 	failDelete error
+	failGet    error
 }
 
 func newFakeCalendarClient() *fakeCalendarClient {
@@ -111,6 +112,15 @@ func (f *fakeCalendarClient) FindBlockBySource(ctx context.Context, calendarID, 
 		}
 	}
 	return nil, nil
+}
+
+func (f *fakeCalendarClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failGet != nil {
+		return nil, f.failGet
+	}
+	return f.events[eventID], nil // nil if absent, matching the real client's 404->nil
 }
 
 func (f *fakeCalendarClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {

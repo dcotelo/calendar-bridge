@@ -174,6 +174,10 @@ func (f *flakyClient) FindBlockBySource(ctx context.Context, calendarID, srcAcco
 	return f.inner.FindBlockBySource(ctx, calendarID, srcAccount, srcEventID)
 }
 
+func (f *flakyClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
+	return f.inner.GetEvent(ctx, calendarID, eventID)
+}
+
 func (f *flakyClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
 	return f.inner.InsertEvent(ctx, calendarID, ev)
 }

@@ -159,7 +159,33 @@ func TestGoogleProvider_PropagatesClientErrors(t *testing.T) {
 			name: "DeleteBlock",
 			set:  func(f *fakeCalendarClient) { f.failDelete = sentinel },
 			call: func(p Provider, f *fakeCalendarClient) error {
-				return p.DeleteBlock(context.Background(), "primary", "some-id")
+				// Seed an owned block so DeleteBlock's ownership re-check passes
+				// and it reaches the (failing) DeleteEvent call.
+				blk := realEventIn("blk", time.Hour, time.Hour)
+				blk.ExtendedProperties = extProps(map[string]string{
+					ownerKey: ownerValue, sourceAccountKey: "a",
+					sourceCalendarKey: "primary", sourceEventKey: "real-1",
+				})
+				f.seed("blk", blk)
+				return p.DeleteBlock(context.Background(), "primary", "blk")
+			},
+		},
+		{
+			name: "UpdateBlockTime",
+			set:  func(f *fakeCalendarClient) { f.failUpdate = sentinel },
+			call: func(p Provider, f *fakeCalendarClient) error {
+				// Seed the owned block so the find succeeds and update is reached.
+				blk := realEventIn("blk", time.Hour, time.Hour)
+				blk.ExtendedProperties = extProps(map[string]string{
+					ownerKey: ownerValue, sourceAccountKey: "a",
+					sourceCalendarKey: "primary", sourceEventKey: "real-1",
+				})
+				f.seed("blk", blk)
+				ev, err := p.UpdateBlockTime(context.Background(), "primary", Event{Ownership: own}, start, end)
+				if ev != nil {
+					t.Errorf("UpdateBlockTime returned event on error")
+				}
+				return err
 			},
 		},
 	}
@@ -173,6 +199,29 @@ func TestGoogleProvider_PropagatesClientErrors(t *testing.T) {
 				t.Errorf("%s err = %v, want sentinel", tc.name, err)
 			}
 		})
+	}
+}
+
+func TestGoogleProvider_DeleteRejectsUnownedTarget(t *testing.T) {
+	fake := newFakeCalendarClient()
+	// A plain, untagged real event sitting at the target ID.
+	fake.seed("real-1", realEventIn("real-1", time.Hour, time.Hour))
+	p := NewGoogleProvider(fake)
+
+	err := p.DeleteBlock(context.Background(), "primary", "real-1")
+	if !errors.Is(err, ErrNotOwned) {
+		t.Fatalf("DeleteBlock err = %v, want ErrNotOwned for an untagged target", err)
+	}
+	if _, ok := fake.events["real-1"]; !ok {
+		t.Error("untagged event was deleted; want it left intact")
+	}
+}
+
+func TestGoogleProvider_DeleteMissingIsNoop(t *testing.T) {
+	fake := newFakeCalendarClient()
+	p := NewGoogleProvider(fake)
+	if err := p.DeleteBlock(context.Background(), "primary", "nope"); err != nil {
+		t.Errorf("DeleteBlock on missing id = %v, want nil (already gone)", err)
 	}
 }
 

@@ -61,6 +61,16 @@ func (c *retryingClient) FindBlockBySource(ctx context.Context, calendarID, srcA
 	return out, err
 }
 
+func (c *retryingClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
+	var out *calendar.Event
+	err := retry(ctx, c.policy, c.onRetry("GetEvent"), func() error {
+		var err error
+		out, err = c.inner.GetEvent(ctx, calendarID, eventID)
+		return err
+	})
+	return out, err
+}
+
 func (c *retryingClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
 	var out *calendar.Event
 	err := retry(ctx, c.policy, c.onRetry("InsertEvent"), func() error {

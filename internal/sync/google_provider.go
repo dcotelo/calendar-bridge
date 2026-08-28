@@ -160,7 +160,19 @@ func (g *googleProvider) UpdateBlockTime(ctx context.Context, calendarID string,
 }
 
 func (g *googleProvider) DeleteBlock(ctx context.Context, calendarID, blockID string) error {
-	// Ownership is guaranteed by the caller (see Provider.DeleteBlock): the
-	// engine only ever deletes blocks it already matched via isOwnedBlock.
+	// Re-read the target and verify it is calendar-bridge-owned before
+	// deleting, so an untagged real event can never be removed through this
+	// path — even if a caller passes the wrong ID. Enforced here rather than
+	// trusting caller discipline.
+	ev, err := g.client.GetEvent(ctx, calendarID, blockID)
+	if err != nil {
+		return err
+	}
+	if ev == nil {
+		return nil // already gone; nothing to do
+	}
+	if !isOwnedBlock(ev) {
+		return ErrNotOwned
+	}
 	return g.client.DeleteEvent(ctx, calendarID, blockID)
 }
