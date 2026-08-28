@@ -164,6 +164,16 @@ func (g *googleProvider) DeleteBlock(ctx context.Context, calendarID, blockID st
 	// deleting, so an untagged real event can never be removed through this
 	// path — even if a caller passes the wrong ID. Enforced here rather than
 	// trusting caller discipline.
+	//
+	// There is a narrow theoretical TOCTOU window between this read and the
+	// delete: a concurrent actor could strip the ownership tag in between, and
+	// the delete would still fire. Closing it fully needs an If-Match/ETag
+	// conditional delete, which the neutral Provider model doesn't carry. We
+	// accept the window deliberately: the only writer of these blocks is
+	// calendar-bridge itself (a single-writer daemon), the production sync path
+	// deletes via the plain Google client on blocks it just listed rather than
+	// through this adapter, and the re-check already defeats the realistic
+	// failure mode (a stale/incorrect ID pointing at a real event).
 	ev, err := g.client.GetEvent(ctx, calendarID, blockID)
 	if err != nil {
 		return err
