@@ -4,7 +4,9 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -43,6 +45,34 @@ type Config struct {
 
 	// BlockTitle is the title used for synced busy blocks.
 	BlockTitle string `yaml:"block_title"`
+
+	// WebUI configures the optional local configuration web UI (see the `ui`
+	// subcommand and internal/webui). Disabled unless explicitly enabled.
+	WebUI WebUI `yaml:"web_ui"`
+}
+
+// WebUI configures the local configuration management web UI.
+//
+// Security model: the UI can read and write config.yaml, so it is treated as
+// a privileged local admin surface. It binds loopback (127.0.0.1) by default
+// and REFUSES to bind a non-loopback address unless AuthToken is set, so it is
+// never silently exposed to a network without authentication. Even so, it
+// never reads or serves credential/token file *contents* — those stay on disk;
+// the UI only edits the file paths, exactly like editing config.yaml by hand.
+type WebUI struct {
+	// Enabled turns the `ui` server on. When false the subcommand refuses to
+	// start.
+	Enabled bool `yaml:"enabled"`
+
+	// ListenAddr is the address the UI binds. Defaults to "127.0.0.1:8090".
+	// A non-loopback host (e.g. "0.0.0.0:8090") is only permitted when
+	// AuthToken is set.
+	ListenAddr string `yaml:"listen_addr"`
+
+	// AuthToken, when set, is required as a Bearer token on every request
+	// (compared in constant time). It is mandatory to bind a non-loopback
+	// address. Treat it as a credential.
+	AuthToken string `yaml:"auth_token"`
 }
 
 // Load reads and parses a YAML config file at path.
@@ -77,6 +107,73 @@ func (c *Config) applyDefaults() {
 	if c.BlockTitle == "" {
 		c.BlockTitle = "Busy (calendar-bridge)"
 	}
+	if c.WebUI.ListenAddr == "" {
+		c.WebUI.ListenAddr = "127.0.0.1:8090"
+	}
+}
+
+// Save validates the config and writes it back to path as YAML, atomically
+// and with owner-only (0600) permissions.
+//
+// It writes to a temporary file in the same directory and renames it into
+// place, so a crash mid-write can never leave a truncated or half-written
+// config. It validates BEFORE touching disk, so an invalid config (e.g.
+// fewer than 2 accounts, missing required fields) is rejected without
+// clobbering the existing file. The file is written 0600 because it may
+// contain the WebUI auth token and always references credential/token paths.
+func (c *Config) Save(path string) error {
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("refusing to save invalid config: %w", err)
+	}
+
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".config-*.yaml.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp config file in %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	// Best-effort cleanup if we bail before the rename succeeds.
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp config file to 0600: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temp config file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp config file: %w", err)
+	}
+
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("atomically replacing config file %s: %w", path, err)
+	}
+	return nil
+}
+
+// IsLoopbackAddr reports whether host:port addr binds only the loopback
+// interface. Used to decide whether the WebUI may start without an auth
+// token. An empty host (":8090") binds all interfaces and is NOT loopback.
+func IsLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return false // ":port" binds all interfaces
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Validate checks the config for obvious mistakes before the sync engine
