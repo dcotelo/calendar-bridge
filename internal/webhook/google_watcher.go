@@ -19,6 +19,11 @@ type googleWatcher struct {
 	services map[string]*calendar.Service // account name -> service
 }
 
+// watchCallTimeout bounds a single events.watch / channels.stop call so one
+// slow API call can't block renewal of every other target (Manager.Run passes
+// a long-lived process context).
+const watchCallTimeout = 30 * time.Second
+
 // NewGoogleWatcher builds a ChannelWatcher over per-account Calendar services.
 // The map key must match the account name passed to Watch/Stop.
 func NewGoogleWatcher(services map[string]*calendar.Service) ChannelWatcher {
@@ -43,7 +48,9 @@ func (g *googleWatcher) Watch(ctx context.Context, account, calendarID, callback
 		req.Expiration = time.Now().Add(ttl).UnixMilli()
 	}
 
-	res, err := svc.Events.Watch(calendarID, req).Context(ctx).Do()
+	callCtx, cancel := context.WithTimeout(ctx, watchCallTimeout)
+	defer cancel()
+	res, err := svc.Events.Watch(calendarID, req).Context(callCtx).Do()
 	if err != nil {
 		return Channel{}, fmt.Errorf("events.watch on %s/%s: %w", account, calendarID, err)
 	}
@@ -66,8 +73,10 @@ func (g *googleWatcher) Stop(ctx context.Context, ch Channel) error {
 	if !ok {
 		return fmt.Errorf("no calendar service for account %q", ch.Account)
 	}
+	callCtx, cancel := context.WithTimeout(ctx, watchCallTimeout)
+	defer cancel()
 	return svc.Channels.Stop(&calendar.Channel{
 		Id:         ch.ID,
 		ResourceId: ch.ResourceID,
-	}).Context(ctx).Do()
+	}).Context(callCtx).Do()
 }

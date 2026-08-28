@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -210,7 +211,13 @@ func runSync(args []string) {
 			os.Exit(1)
 		}
 		pushTrigger = trigger
-		logger.Info("push notifications enabled", "listen", cfg.Webhook.ListenAddr, "public_url", cfg.Webhook.PublicURL)
+		// Log only the scheme://host origin, never the full URL: a public_url
+		// may carry a non-root path we shouldn't echo into shared logs.
+		origin := cfg.Webhook.PublicURL
+		if u, err := url.Parse(cfg.Webhook.PublicURL); err == nil && u.Host != "" {
+			origin = u.Scheme + "://" + u.Host
+		}
+		logger.Info("push notifications enabled", "listen", cfg.Webhook.ListenAddr, "public_url_origin", origin)
 	}
 
 	logger.Info("starting sync loop", "interval", interval, "accounts", len(cfg.Accounts), "push", cfg.Webhook.Enabled)
