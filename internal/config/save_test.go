@@ -98,6 +98,33 @@ func TestSave_RejectsInvalidWithoutClobbering(t *testing.T) {
 	}
 }
 
+func TestValidate_RejectsBadPollIntervalAndLookahead(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+	}{
+		{"valid", func(c *Config) {}, false},
+		{"bad poll_interval", func(c *Config) { c.PollInterval = "banana" }, true},
+		{"empty poll_interval ok", func(c *Config) { c.PollInterval = "" }, false},
+		{"negative lookahead", func(c *Config) { c.LookaheadDays = -1 }, true},
+		{"zero lookahead ok", func(c *Config) { c.LookaheadDays = 0 }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			tc.mutate(c)
+			err := c.Validate()
+			if tc.wantErr && err == nil {
+				t.Error("Validate() = nil, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate() = %v, want nil", err)
+			}
+		})
+	}
+}
+
 func TestIsLoopbackAddr(t *testing.T) {
 	cases := []struct {
 		addr string

@@ -20,10 +20,13 @@
 package webui
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/dcotelo/calendar-bridge/internal/config"
@@ -102,15 +105,45 @@ func New(opts Options) (*Server, error) {
 	}, nil
 }
 
-// Handler returns the http.Handler serving the UI and API, with auth applied.
+// Handler returns the http.Handler serving the UI and API.
+//
+// GET / (the page itself) is served WITHOUT the auth gate: a browser cannot
+// attach an Authorization header to a top-level navigation, so gating the page
+// would make an authenticated deployment unreachable. The page contains no
+// secrets — it collects the token from the operator and sends it on API calls.
+// The auth gate and the CSRF origin check apply to /api/* only.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/config", s.handleGetConfig)
-	mux.HandleFunc("PUT /api/config", s.handlePutConfig)
-	mux.HandleFunc("GET /api/status", s.handleGetStatus)
-	mux.HandleFunc("POST /api/sync", s.handleSync)
-	mux.HandleFunc("GET /", s.handleIndex)
-	return s.authMiddleware(mux)
+	api := http.NewServeMux()
+	api.HandleFunc("GET /api/config", s.handleGetConfig)
+	api.HandleFunc("PUT /api/config", s.handlePutConfig)
+	api.HandleFunc("GET /api/status", s.handleGetStatus)
+	api.HandleFunc("POST /api/sync", s.handleSync)
+
+	root := http.NewServeMux()
+	root.Handle("/api/", s.authMiddleware(s.csrfGuard(api)))
+	root.HandleFunc("/", s.handleIndex)
+	return root
+}
+
+// csrfGuard rejects cross-site state-changing requests. In the default no-token
+// loopback mode authMiddleware is a pass-through, so without this a page the
+// operator visits could drive a cross-origin form POST to /api/sync. We reject
+// any request whose Sec-Fetch-Site is present and not same-origin/none, or
+// whose Origin is set and doesn't match the request host.
+func (s *Server) csrfGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+			http.Error(w, "cross-site request rejected", http.StatusForbidden)
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			if u, err := url.Parse(origin); err != nil || u.Host != r.Host {
+				http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // authMiddleware enforces the Bearer token (when configured) in constant time.
@@ -118,12 +151,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.authToken != "" {
-			const prefix = "Bearer "
-			got := r.Header.Get("Authorization")
-			// Constant-time compare of the full "Bearer <token>" value avoids
-			// leaking token length/content through timing.
-			want := prefix + s.authToken
-			if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			if !s.validToken(r.Header.Get("Authorization")) {
 				s.logger.Warn("webui: rejected request with missing/invalid token",
 					"remote", r.RemoteAddr, "path", r.URL.Path)
 				w.Header().Set("WWW-Authenticate", "Bearer")
@@ -133,4 +161,18 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// validToken checks an Authorization header value against the configured token.
+// The scheme ("Bearer") is matched case-insensitively per RFC 7235, and the
+// token is compared using fixed-size SHA-256 digests so neither length nor
+// content leaks through timing.
+func (s *Server) validToken(authHeader string) bool {
+	scheme, token, ok := strings.Cut(authHeader, " ")
+	if !ok || !strings.EqualFold(scheme, "bearer") {
+		return false
+	}
+	got := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	want := sha256.Sum256([]byte(s.authToken))
+	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
 }

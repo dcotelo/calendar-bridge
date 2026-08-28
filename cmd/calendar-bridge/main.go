@@ -283,6 +283,10 @@ func runUI(args []string) {
 		Addr:              cfg.WebUI.ListenAddr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bound idle keep-alive connections. No short WriteTimeout on purpose:
+		// POST /api/sync runs a full sync pass inline (up to syncCycleTimeout),
+		// and a short write deadline would truncate a legitimate response.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	go func() {

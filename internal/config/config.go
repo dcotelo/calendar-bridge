@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -209,6 +210,19 @@ func (c *Config) Validate() error {
 		if a.CalendarID == "" {
 			return fmt.Errorf("accounts[%d] (%s): calendar_id is required", i, a.Name)
 		}
+	}
+
+	// Validate sync tuning so an invalid value written through any path
+	// (including the web UI's Save) is rejected up front rather than crashing
+	// `run` at startup. Empty poll_interval is allowed here — applyDefaults
+	// fills it after Load.
+	if c.PollInterval != "" {
+		if _, err := time.ParseDuration(c.PollInterval); err != nil {
+			return fmt.Errorf("poll_interval %q is not a valid duration: %w", c.PollInterval, err)
+		}
+	}
+	if c.LookaheadDays < 0 {
+		return fmt.Errorf("lookahead_days must not be negative, got %d", c.LookaheadDays)
 	}
 	return nil
 }

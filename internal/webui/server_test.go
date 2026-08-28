@@ -288,6 +288,67 @@ func TestSync_RejectsConcurrent(t *testing.T) {
 	close(release)
 }
 
+func TestIndex_ServedWithoutAuthEvenWhenTokenSet(t *testing.T) {
+	// The critical fix: a browser can't send Authorization on a top-level
+	// navigation, so GET / must return the page even when a token is configured.
+	srv := newTestServer(t, "s3cret")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodGet, "/", "", "")) // no token header
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200 (page must load so it can collect the token)", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "<html") {
+		t.Error("GET / did not return HTML")
+	}
+}
+
+func TestAPI_StillGatedWhenTokenSet(t *testing.T) {
+	srv := newTestServer(t, "s3cret")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodGet, "/api/config", "", "")) // no token
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("GET /api/config status = %d, want 401 (API stays gated)", w.Code)
+	}
+}
+
+func TestAuth_BearerSchemeCaseInsensitive(t *testing.T) {
+	srv := newTestServer(t, "s3cret")
+	w := httptest.NewRecorder()
+	r := req(t, http.MethodGet, "/api/config", "", "")
+	r.Header.Set("Authorization", "bearer s3cret") // lowercase scheme
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("lowercase bearer scheme status = %d, want 200 (RFC 7235 case-insensitive)", w.Code)
+	}
+}
+
+func TestPutConfig_RejectsMalformedJSON(t *testing.T) {
+	path := writeConfig(t, validYAML)
+	srv := newTestServer(t, "", func(o *Options) { o.ConfigPath = path })
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodPut, "/api/config", "", "{not json"))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("malformed JSON status = %d, want 400", w.Code)
+	}
+	if cfg, err := config.Load(path); err != nil || len(cfg.Accounts) != 2 {
+		t.Error("config changed after malformed PUT; want unchanged")
+	}
+}
+
+func TestPutConfig_RejectsUnknownField(t *testing.T) {
+	path := writeConfig(t, validYAML)
+	srv := newTestServer(t, "", func(o *Options) { o.ConfigPath = path })
+	body := `{"accounts":[],"bogus_field":true}`
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodPut, "/api/config", "", body))
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("unknown-field status = %d, want 400", w.Code)
+	}
+	if cfg, err := config.Load(path); err != nil || len(cfg.Accounts) != 2 {
+		t.Error("config changed after unknown-field PUT; want unchanged")
+	}
+}
+
 func TestSync_CallsCallback(t *testing.T) {
 	called := false
 	srv := newTestServer(t, "", func(o *Options) {
