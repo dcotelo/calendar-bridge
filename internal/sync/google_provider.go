@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
@@ -82,6 +83,9 @@ func (g *googleProvider) ListEvents(ctx context.Context, calendarID string, time
 	}
 	out := make([]Event, 0, len(raw))
 	for _, ev := range raw {
+		if ev == nil {
+			continue // defensively skip nil entries from a misbehaving client
+		}
 		out = append(out, eventFromGoogle(ev))
 	}
 	return out, nil
@@ -132,6 +136,9 @@ func (g *googleProvider) InsertBlock(ctx context.Context, calendarID, title stri
 	if err != nil {
 		return nil, err
 	}
+	if created == nil {
+		return nil, fmt.Errorf("insert returned no event")
+	}
 	e := eventFromGoogle(created)
 	return &e, nil
 }
@@ -174,6 +181,9 @@ func (g *googleProvider) UpdateBlockTime(ctx context.Context, calendarID string,
 	updated, err := g.client.UpdateEvent(ctx, calendarID, full.Id, full)
 	if err != nil {
 		return nil, err
+	}
+	if updated == nil {
+		return nil, fmt.Errorf("update returned no event")
 	}
 	e := eventFromGoogle(updated)
 	return &e, nil
