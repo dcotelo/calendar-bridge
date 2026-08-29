@@ -275,8 +275,8 @@ func (l *looseFindClient) UpdateEvent(ctx context.Context, calendarID, eventID s
 	l.updated = true
 	return l.inner.UpdateEvent(ctx, calendarID, eventID, ev)
 }
-func (l *looseFindClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
-	return l.inner.DeleteEvent(ctx, calendarID, eventID)
+func (l *looseFindClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
+	return l.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
 }
 
 // TestGoogleProvider_IgnoresSourceMatchButUntagged proves the adapter does not

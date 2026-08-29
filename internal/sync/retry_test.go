@@ -198,8 +198,8 @@ func (g *getFlakyClient) InsertEvent(ctx context.Context, calendarID string, ev 
 func (g *getFlakyClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
 	return g.inner.UpdateEvent(ctx, calendarID, eventID, ev)
 }
-func (g *getFlakyClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
-	return g.inner.DeleteEvent(ctx, calendarID, eventID)
+func (g *getFlakyClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
+	return g.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
 }
 func (g *getFlakyClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
 	g.getCalls++
@@ -241,6 +241,6 @@ func (f *flakyClient) UpdateEvent(ctx context.Context, calendarID, eventID strin
 	return f.inner.UpdateEvent(ctx, calendarID, eventID, ev)
 }
 
-func (f *flakyClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
-	return f.inner.DeleteEvent(ctx, calendarID, eventID)
+func (f *flakyClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
+	return f.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
 }

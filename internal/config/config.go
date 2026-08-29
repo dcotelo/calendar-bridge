@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -185,6 +186,18 @@ func (c *Config) Validate() error {
 		}
 		if c.Webhook.VerificationToken == "" {
 			return fmt.Errorf("webhook.verification_token is required when webhook.enabled is true (used to reject forged notifications)")
+		}
+		// Validate explicitly-set durations here (before defaults are applied),
+		// so an invalid value fails at config load rather than mid-startup.
+		if c.Webhook.DebounceInterval != "" {
+			if _, err := time.ParseDuration(c.Webhook.DebounceInterval); err != nil {
+				return fmt.Errorf("webhook.debounce_interval %q is not a valid duration: %w", c.Webhook.DebounceInterval, err)
+			}
+		}
+		if c.Webhook.ChannelTTL != "" {
+			if _, err := time.ParseDuration(c.Webhook.ChannelTTL); err != nil {
+				return fmt.Errorf("webhook.channel_ttl %q is not a valid duration: %w", c.Webhook.ChannelTTL, err)
+			}
 		}
 	}
 	return nil

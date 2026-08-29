@@ -162,7 +162,10 @@ func (e *Engine) SyncOnce(ctx context.Context) error {
 			}
 			if !liveSourceIDs[srcAccount+"|"+srcEventID] {
 				e.Logger.Info("removing stale block", "account", dst.Name, "block_id", block.Id, "source", srcAccount+"/"+srcEventID)
-				if err := dst.Client.DeleteEvent(ctx, dst.CalendarID, block.Id); err != nil {
+				// Conditional on the ETag we listed: if the block changed since
+				// the fetch, the delete fails rather than removing a now-altered
+				// event. block.Etag may be empty (e.g. test fakes) → unconditional.
+				if err := dst.Client.DeleteEvent(ctx, dst.CalendarID, block.Id, block.Etag); err != nil {
 					syncErrs = append(syncErrs, fmt.Errorf("deleting stale block %s on %s: %w", block.Id, dst.Name, err))
 				}
 			}

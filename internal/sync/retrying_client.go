@@ -91,8 +91,8 @@ func (c *retryingClient) UpdateEvent(ctx context.Context, calendarID, eventID st
 	return out, err
 }
 
-func (c *retryingClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
+func (c *retryingClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
 	return retry(ctx, c.policy, c.onRetry("DeleteEvent"), func() error {
-		return c.inner.DeleteEvent(ctx, calendarID, eventID)
+		return c.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
 	})
 }

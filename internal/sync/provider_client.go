@@ -102,7 +102,11 @@ func (c *providerClient) UpdateEvent(ctx context.Context, calendarID, eventID st
 	return eventToGoogle(*updated), nil
 }
 
-func (c *providerClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
+func (c *providerClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
+	// The neutral Provider.DeleteBlock performs its own read + ownership-checked
+	// conditional delete, so the caller-supplied ifMatchETag isn't threaded
+	// through here (a neutral Event carries no ETag).
+	_ = ifMatchETag
 	return c.p.DeleteBlock(ctx, calendarID, eventID)
 }
 

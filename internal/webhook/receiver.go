@@ -117,9 +117,13 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 type Debouncer struct {
 	interval time.Duration
 
-	mu      sync.Mutex
-	timer   *time.Timer
-	pending bool
+	mu    sync.Mutex
+	timer *time.Timer
+	// gen increments on every Notify; a fire callback only emits if its
+	// captured generation still matches, so a callback from an older timer
+	// generation (which Reset can leave scheduled) is discarded rather than
+	// emitting early and violating the quiet-period contract.
+	gen uint64
 
 	// C receives one value per debounced burst. Buffered so a fire never
 	// blocks the debounce goroutine even if the consumer is mid-sync.
@@ -140,19 +144,25 @@ func NewDebouncer(interval time.Duration) *Debouncer {
 func (d *Debouncer) Notify() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.gen++
+	gen := d.gen
 	if d.timer == nil {
-		d.timer = time.AfterFunc(d.interval, d.fire)
+		d.timer = time.AfterFunc(d.interval, func() { d.fire(gen) })
 		return
 	}
-	// Coalesce: extend the window.
-	d.pending = true
-	d.timer.Reset(d.interval)
+	// Coalesce: extend the window. Re-arm with the current generation so a
+	// previously-scheduled callback (if Reset raced with it firing) is ignored.
+	d.timer.Stop()
+	d.timer = time.AfterFunc(d.interval, func() { d.fire(gen) })
 }
 
-func (d *Debouncer) fire() {
+func (d *Debouncer) fire(gen uint64) {
 	d.mu.Lock()
-	d.pending = false
+	current := d.gen
 	d.mu.Unlock()
+	if gen != current {
+		return // superseded by a newer Notify; discard this stale callback
+	}
 
 	// Non-blocking send: if a trigger is already queued, one is enough.
 	select {

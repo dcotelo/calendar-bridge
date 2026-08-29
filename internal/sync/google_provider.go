@@ -2,10 +2,12 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // This file provides two adapters:
@@ -117,6 +119,15 @@ func (g *googleProvider) InsertBlock(ctx context.Context, calendarID, title stri
 	if !own.validForWrite() {
 		return nil, ErrNotOwned
 	}
+	// Idempotency: a retried insert (e.g. Google created the block but the
+	// response was lost, then the call was retried) must not create a second
+	// block. Check for an existing owned block for this source first and reuse
+	// it. FindOwnedBlock already verifies ownership + source match.
+	if existing, err := g.FindOwnedBlock(ctx, calendarID, own.SourceAccount, own.SourceEventID); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return existing, nil
+	}
 	block := &calendar.Event{
 		Summary:      title,
 		Start:        spanToGoogle(start),
@@ -190,29 +201,36 @@ func (g *googleProvider) UpdateBlockTime(ctx context.Context, calendarID string,
 }
 
 func (g *googleProvider) DeleteBlock(ctx context.Context, calendarID, blockID string) error {
-	// Re-read the target and verify it is calendar-bridge-owned before
-	// deleting, so an untagged real event can never be removed through this
-	// path — even if a caller passes the wrong ID. Enforced here rather than
-	// trusting caller discipline.
-	//
-	// There is a narrow theoretical TOCTOU window between this read and the
-	// delete: a concurrent actor could strip the ownership tag in between, and
-	// the delete would still fire. Closing it fully needs an If-Match/ETag
-	// conditional delete, which the neutral Provider model doesn't carry. We
-	// accept the window deliberately: the only writer of these blocks is
-	// calendar-bridge itself (a single-writer daemon), the production sync path
-	// deletes via the plain Google client on blocks it just listed rather than
-	// through this adapter, and the re-check already defeats the realistic
-	// failure mode (a stale/incorrect ID pointing at a real event).
-	ev, err := g.client.GetEvent(ctx, calendarID, blockID)
-	if err != nil {
-		return err
+	// Verify the target is calendar-bridge-owned before deleting, and make the
+	// check-and-delete atomic via an If-Match on the event's ETag: if the event
+	// changed between the read and the delete, the conditional delete fails its
+	// precondition rather than removing an event that may no longer be ours. On
+	// a precondition failure we re-read, re-verify ownership, and retry once
+	// with the fresh ETag; a still-owned block is a benign concurrent time
+	// update, while a now-untagged event is refused. This upholds "never delete
+	// an untagged event" even under concurrent modification.
+	const maxAttempts = 2
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		ev, err := g.client.GetEvent(ctx, calendarID, blockID)
+		if err != nil {
+			return err
+		}
+		if ev == nil {
+			return nil // already gone; nothing to do
+		}
+		if !isOwnedBlock(ev) {
+			return ErrNotOwned
+		}
+		err = g.client.DeleteEvent(ctx, calendarID, blockID, ev.Etag)
+		if err == nil {
+			return nil
+		}
+		// A 412 precondition failure means the event changed after our read;
+		// loop to re-read and re-verify. Any other error is returned as-is.
+		var apiErr *googleapi.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != 412 {
+			return err
+		}
 	}
-	if ev == nil {
-		return nil // already gone; nothing to do
-	}
-	if !isOwnedBlock(ev) {
-		return ErrNotOwned
-	}
-	return g.client.DeleteEvent(ctx, calendarID, blockID)
+	return fmt.Errorf("delete of block %s kept failing its ownership precondition (event changing concurrently)", blockID)
 }

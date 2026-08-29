@@ -149,7 +149,7 @@ func (f *fakeCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventI
 	return ev, nil
 }
 
-func (f *fakeCalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
+func (f *fakeCalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failDelete != nil {

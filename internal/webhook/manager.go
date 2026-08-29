@@ -139,17 +139,20 @@ func (m *Manager) renewExpiring(ctx context.Context, targets []Target) {
 			continue
 		}
 
-		// Stop the old channel first (best-effort) so we don't leak channels
-		// on the provider side, then register a fresh one.
+		// Register the replacement FIRST, then stop the old channel only on
+		// success. If events.watch fails we keep the (soon-to-expire) old
+		// channel rather than ending up with none — push stays available until
+		// expiry, and polling remains the safety net.
+		if err := m.register(ctx, t); err != nil {
+			m.logger.Error("failed to renew watch channel; keeping the existing one until expiry, poll fallback covers the gap",
+				"account", t.Account, "calendar", t.CalendarID, "error", err)
+			continue
+		}
 		if ok {
 			if err := m.watcher.Stop(ctx, ch); err != nil {
-				m.logger.Warn("failed to stop expiring channel before renew",
+				m.logger.Warn("failed to stop old channel after renew (it will expire on its own)",
 					"account", t.Account, "calendar", t.CalendarID, "error", err)
 			}
-		}
-		if err := m.register(ctx, t); err != nil {
-			m.logger.Error("failed to renew watch channel; poll fallback covers this calendar",
-				"account", t.Account, "calendar", t.CalendarID, "error", err)
 		}
 	}
 }
