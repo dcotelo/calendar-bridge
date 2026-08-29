@@ -36,9 +36,11 @@ control.
 
 - **Not** a full two-way mirror. Event content is never copied — only a
   generic "Busy" placeholder.
-- **Not** real-time. It polls on an interval (default 5 minutes), it does
-  not use Calendar API push notifications/webhooks (yet — see
-  [Roadmap](#roadmap)).
+- **Polling by default, not real-time.** It polls on an interval (default 5
+  minutes). Google Calendar API push notifications (webhooks) are available as
+  opt-in for near-instant propagation — see
+  [docs/webhooks.md](docs/webhooks.md) and the [Roadmap](#roadmap); polling
+  stays on as the safety net.
 - **Not** a replacement for genuine multi-calendar overlay views (Google's
   own "other calendars" sidebar already does that within one account).
 

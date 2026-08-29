@@ -93,6 +93,16 @@ func (g *googleProvider) FindOwnedBlock(ctx context.Context, calendarID, srcAcco
 		return nil, err
 	}
 	e := eventFromGoogle(ev)
+	// Don't trust the CalendarClient to have filtered correctly: only return a
+	// block that is genuinely calendar-bridge-owned AND whose source identity
+	// matches what was requested. A source-property match without the owner tag
+	// (or with a different source) must never be treated as our block, or the
+	// caller could overwrite a real user event.
+	if !e.Ownership.validForWrite() ||
+		e.Ownership.SourceAccount != srcAccount ||
+		e.Ownership.SourceEventID != srcEventID {
+		return nil, nil
+	}
 	return &e, nil
 }
 
@@ -148,6 +158,16 @@ func (g *googleProvider) UpdateBlockTime(ctx context.Context, calendarID string,
 		// The block vanished between list and update (deleted concurrently);
 		// nothing to move. Report it via a nil result, no error.
 		return nil, nil
+	}
+	// Don't trust the re-read result: verify it is genuinely our owned block
+	// with a matching source identity before overwriting its times. A
+	// source-property match that is untagged, incomplete, or points at a
+	// different source must not be updated — that could clobber a real event.
+	reread := ownershipFromGoogle(full)
+	if !reread.validForWrite() ||
+		reread.SourceAccount != own.SourceAccount ||
+		reread.SourceEventID != own.SourceEventID {
+		return nil, ErrNotOwned
 	}
 	full.Start = spanToGoogle(start)
 	full.End = spanToGoogle(end)

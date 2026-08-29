@@ -260,9 +260,14 @@ func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*
 	if err != nil {
 		return nil, fmt.Errorf("invalid webhook.debounce_interval %q: %w", cfg.Webhook.DebounceInterval, err)
 	}
-	ttl, err := time.ParseDuration(cfg.Webhook.ChannelTTL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid webhook.channel_ttl %q: %w", cfg.Webhook.ChannelTTL, err)
+	// Empty channel_ttl means "use the provider default" (ttl == 0); only parse
+	// a non-empty value, since time.ParseDuration("") errors.
+	var ttl time.Duration
+	if cfg.Webhook.ChannelTTL != "" {
+		ttl, err = time.ParseDuration(cfg.Webhook.ChannelTTL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid webhook.channel_ttl %q: %w", cfg.Webhook.ChannelTTL, err)
+		}
 	}
 
 	debouncer := webhook.NewDebouncer(debounceInterval)

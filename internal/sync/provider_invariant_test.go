@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	calendar "google.golang.org/api/calendar/v3"
 )
 
 func ownedFor(src, evID string) Ownership {
@@ -231,6 +233,82 @@ func TestGoogleProvider_DeleteMissingIsNoop(t *testing.T) {
 	p := NewGoogleProvider(fake)
 	if err := p.DeleteBlock(context.Background(), "primary", "nope"); err != nil {
 		t.Errorf("DeleteBlock on missing id = %v, want nil (already gone)", err)
+	}
+}
+
+func TestGoogleProvider_FindOwnedBlockPropagatesError(t *testing.T) {
+	sentinel := errors.New("find failed")
+	fake := newFakeCalendarClient()
+	fake.failFind = sentinel
+	p := NewGoogleProvider(fake)
+	ev, err := p.FindOwnedBlock(context.Background(), "primary", "a", "real-1")
+	if !errors.Is(err, sentinel) {
+		t.Errorf("FindOwnedBlock err = %v, want sentinel", err)
+	}
+	if ev != nil {
+		t.Errorf("FindOwnedBlock returned event on error")
+	}
+}
+
+// looseFindClient returns a preset event from FindBlockBySource WITHOUT the
+// real client's ownership filter, simulating a buggy/adversarial provider
+// client. It records whether UpdateEvent ran.
+type looseFindClient struct {
+	inner   *fakeCalendarClient
+	ret     *calendar.Event
+	updated bool
+}
+
+func (l *looseFindClient) ListEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]*calendar.Event, error) {
+	return l.inner.ListEvents(ctx, calendarID, timeMin, timeMax)
+}
+func (l *looseFindClient) FindBlockBySource(ctx context.Context, calendarID, srcAccount, srcEventID string) (*calendar.Event, error) {
+	return l.ret, nil
+}
+func (l *looseFindClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
+	return l.inner.GetEvent(ctx, calendarID, eventID)
+}
+func (l *looseFindClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
+	return l.inner.InsertEvent(ctx, calendarID, ev)
+}
+func (l *looseFindClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
+	l.updated = true
+	return l.inner.UpdateEvent(ctx, calendarID, eventID, ev)
+}
+func (l *looseFindClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
+	return l.inner.DeleteEvent(ctx, calendarID, eventID)
+}
+
+// TestGoogleProvider_IgnoresSourceMatchButUntagged proves the adapter does not
+// trust a CalendarClient that returns a source-property match without the full
+// ownership tag: FindOwnedBlock returns nil and UpdateBlockTime refuses.
+func TestGoogleProvider_IgnoresSourceMatchButUntagged(t *testing.T) {
+	fake := newFakeCalendarClient()
+	imposter := realEventIn("imposter", time.Hour, time.Hour)
+	imposter.ExtendedProperties = extProps(map[string]string{
+		sourceAccountKey:  "a",
+		sourceCalendarKey: "primary",
+		sourceEventKey:    "real-1",
+		// deliberately no ownerKey
+	})
+	loose := &looseFindClient{inner: fake, ret: imposter}
+	p := NewGoogleProvider(loose)
+
+	got, err := p.FindOwnedBlock(context.Background(), "primary", "a", "real-1")
+	if err != nil {
+		t.Fatalf("FindOwnedBlock err = %v", err)
+	}
+	if got != nil {
+		t.Error("FindOwnedBlock returned an untagged source-match; want nil")
+	}
+
+	_, err = p.UpdateBlockTime(context.Background(), "primary", Event{Ownership: ownedFor("a", "real-1")},
+		TimeSpan{DateTime: time.Now().Format(time.RFC3339)}, TimeSpan{DateTime: time.Now().Add(time.Hour).Format(time.RFC3339)})
+	if !errors.Is(err, ErrNotOwned) {
+		t.Errorf("UpdateBlockTime err = %v, want ErrNotOwned for untagged re-read", err)
+	}
+	if loose.updated {
+		t.Error("UpdateBlockTime called UpdateEvent on an untagged event")
 	}
 }
 
