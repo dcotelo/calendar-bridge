@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	stdsync "sync"
 	"syscall"
 	"time"
 
@@ -204,13 +205,15 @@ func runSync(args []string) {
 	// polling — polling stays on as a safety net so a missed/late notification
 	// never means a permanently-missed change.
 	var pushTrigger <-chan struct{}
+	waitWebhook := func() {}
 	if cfg.Webhook.Enabled {
-		trigger, err := startWebhook(ctx, cfg, services, logger)
+		trigger, wait, err := startWebhook(ctx, cfg, services, logger)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "starting webhook: %v\n", err)
 			os.Exit(1)
 		}
 		pushTrigger = trigger
+		waitWebhook = wait
 		// Log only the scheme://host origin, never the full URL: a public_url
 		// may carry a non-root path we shouldn't echo into shared logs.
 		origin := cfg.Webhook.PublicURL
@@ -225,6 +228,7 @@ func runSync(args []string) {
 		select {
 		case <-ctx.Done():
 			logger.Info("received shutdown signal, exiting")
+			waitWebhook()
 			return
 		default:
 		}
@@ -243,6 +247,7 @@ func runSync(args []string) {
 		select {
 		case <-ctx.Done():
 			logger.Info("received shutdown signal, exiting")
+			waitWebhook()
 			return
 		case <-pushTrigger:
 			logger.Info("sync triggered by push notification")
@@ -253,12 +258,15 @@ func runSync(args []string) {
 
 // startWebhook starts the push-notification receiver HTTP server and the
 // watch-channel manager, returning a channel that fires (debounced) whenever a
-// calendar change notification arrives. Both the server and manager stop when
-// ctx is cancelled.
-func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*calendar.Service, logger *slog.Logger) (<-chan struct{}, error) {
+// calendar change notification arrives, and a wait function that blocks until
+// both the server and the manager have finished shutting down. Both stop when
+// ctx is cancelled; the caller must call wait before the process exits, or
+// Google may keep POSTing to a callback whose process has already gone away
+// and watch channels may be left registered.
+func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*calendar.Service, logger *slog.Logger) (trigger <-chan struct{}, wait func(), err error) {
 	debounceInterval, err := time.ParseDuration(cfg.Webhook.DebounceInterval)
 	if err != nil {
-		return nil, fmt.Errorf("invalid webhook.debounce_interval %q: %w", cfg.Webhook.DebounceInterval, err)
+		return nil, nil, fmt.Errorf("invalid webhook.debounce_interval %q: %w", cfg.Webhook.DebounceInterval, err)
 	}
 	// Empty channel_ttl means "use the provider default" (ttl == 0); only parse
 	// a non-empty value, since time.ParseDuration("") errors.
@@ -266,7 +274,7 @@ func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*
 	if cfg.Webhook.ChannelTTL != "" {
 		ttl, err = time.ParseDuration(cfg.Webhook.ChannelTTL)
 		if err != nil {
-			return nil, fmt.Errorf("invalid webhook.channel_ttl %q: %w", cfg.Webhook.ChannelTTL, err)
+			return nil, nil, fmt.Errorf("invalid webhook.channel_ttl %q: %w", cfg.Webhook.ChannelTTL, err)
 		}
 	}
 
@@ -278,6 +286,11 @@ func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*
 	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		// The endpoint is publicly reachable; bound how long a stalled
+		// client can hold a connection/goroutine open.
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 	// Bind synchronously so a failure (e.g. the port is already in use) is
 	// reported to the caller instead of being swallowed in a goroutine — which
@@ -286,14 +299,20 @@ func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*
 	var lc net.ListenConfig
 	listener, err := lc.Listen(ctx, "tcp", cfg.Webhook.ListenAddr)
 	if err != nil {
-		return nil, fmt.Errorf("binding webhook listener on %s: %w", cfg.Webhook.ListenAddr, err)
+		return nil, nil, fmt.Errorf("binding webhook listener on %s: %w", cfg.Webhook.ListenAddr, err)
 	}
+
+	var wg stdsync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("webhook server stopped", "error", err)
 		}
 	}()
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		<-ctx.Done()
 		// ctx is already cancelled (that's what unblocked us); derive a fresh
 		// context that ignores that cancellation so Shutdown gets the full
@@ -312,7 +331,11 @@ func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*
 	for _, a := range cfg.Accounts {
 		targets = append(targets, webhook.Target{Account: a.Name, CalendarID: a.CalendarID})
 	}
-	go func() { _ = mgr.Run(ctx, targets) }()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = mgr.Run(ctx, targets)
+	}()
 
-	return debouncer.C, nil
+	return debouncer.C, wg.Wait, nil
 }

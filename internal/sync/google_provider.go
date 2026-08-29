@@ -145,6 +145,16 @@ func (g *googleProvider) InsertBlock(ctx context.Context, calendarID, title stri
 	}
 	created, err := g.client.InsertEvent(ctx, calendarID, block)
 	if err != nil {
+		// The failure may be ambiguous (e.g. a network timeout): the block
+		// could have persisted server-side even though this call saw no
+		// response. Reconcile with a lookup before surfacing the error, so a
+		// caller that retries InsertBlock never creates a second block for
+		// the same source event.
+		if isAmbiguous(err) {
+			if existing, findErr := g.FindOwnedBlock(ctx, calendarID, own.SourceAccount, own.SourceEventID); findErr == nil && existing != nil {
+				return existing, nil
+			}
+		}
 		return nil, err
 	}
 	if created == nil {

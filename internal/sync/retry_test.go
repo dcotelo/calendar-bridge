@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -35,6 +36,8 @@ func TestIsTransient(t *testing.T) {
 		{"400 not retried", &googleapi.Error{Code: http.StatusBadRequest}, false},
 		{"plain error not retried", errors.New("boom"), false},
 		{"timeout net error retried", timeoutErr{}, true},
+		{"temporary non-timeout DNS error retried", &net.DNSError{Err: "server misbehaving", IsTemporary: true}, true},
+		{"non-temporary DNS error not retried", &net.DNSError{Err: "no such host", IsTemporary: false}, false},
 		{"wrapped 429", errors.Join(errors.New("ctx"), &googleapi.Error{Code: 429}), true},
 	}
 	for _, tc := range cases {

@@ -72,10 +72,27 @@ func (c *retryingClient) GetEvent(ctx context.Context, calendarID, eventID strin
 }
 
 func (c *retryingClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
+	var own Ownership
+	if ev != nil {
+		own = ownershipFromGoogle(ev)
+	}
 	var out *calendar.Event
 	err := retry(ctx, c.policy, c.onRetry("InsertEvent"), func() error {
-		var err error
-		out, err = c.inner.InsertEvent(ctx, calendarID, ev)
+		created, err := c.inner.InsertEvent(ctx, calendarID, ev)
+		if err == nil {
+			out = created
+			return nil
+		}
+		// A network timeout is ambiguous: the insert may have persisted on
+		// the server even though we saw no response. Reconcile with a
+		// lookup before letting the caller retry, so a retried InsertEvent
+		// never creates a second busy block for the same source event.
+		if isAmbiguous(err) && own.SourceAccount != "" && own.SourceEventID != "" {
+			if existing, findErr := c.inner.FindBlockBySource(ctx, calendarID, own.SourceAccount, own.SourceEventID); findErr == nil && existing != nil {
+				out = existing
+				return nil
+			}
+		}
 		return err
 	})
 	return out, err

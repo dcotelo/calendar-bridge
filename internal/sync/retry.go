@@ -63,12 +63,46 @@ func isTransient(err error) bool {
 		return apiErr.Code >= 500 && apiErr.Code <= 599
 	}
 
+	// DNS-level errors: a temporary resolution failure (e.g. a resolver
+	// timeout or SERVFAIL) doesn't always report Timeout() == true, so check
+	// IsTemporary explicitly instead of relying solely on the net.Error
+	// check below.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && dnsErr.IsTemporary {
+		return true
+	}
+
 	// Network-level errors: timeouts and other temporary conditions.
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
 
+	return false
+}
+
+// isAmbiguous reports whether err leaves it unknown whether the request's
+// side effect (e.g. an insert) reached the server before the failure. Only a
+// network-level timeout or temporary DNS failure is ambiguous in this sense:
+// no response was received, so the server may have processed the request and
+// failed only to reply. A googleapi.Error means the server did respond, so
+// its outcome is known and is never ambiguous.
+func isAmbiguous(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *googleapi.Error
+	if errors.As(err, &apiErr) {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && dnsErr.IsTemporary {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
 	return false
 }
 

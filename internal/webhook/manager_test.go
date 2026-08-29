@@ -57,9 +57,15 @@ func TestManager_RegistersInitialChannels(t *testing.T) {
 	done := make(chan struct{})
 	go func() { _ = m.Run(ctx, targets); close(done) }()
 
-	// Give Run a moment to do initial registration.
-	time.Sleep(50 * time.Millisecond)
-	watches, _ := fw.counts()
+	// Wait for initial registration, bounded so a slow CI runner doesn't flake.
+	var watches int
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if watches, _ = fw.counts(); watches == 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if watches != 2 {
 		t.Errorf("initial watch calls = %d, want 2 (one per target)", watches)
 	}
