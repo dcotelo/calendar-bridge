@@ -337,6 +337,21 @@ func TestAuth_BearerSchemeCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestPutConfig_FailsWhenExistingConfigUnloadable(t *testing.T) {
+	// Point at a non-existent config path: the merge-load must fail closed
+	// (500) rather than save a payload missing the web_ui server fields.
+	srv := newTestServer(t, "", func(o *Options) { o.ConfigPath = "/nonexistent/dir/config.yaml" })
+	body := `{"accounts":[
+	  {"name":"a","credentials_file":"a.json","token_file":"at.json","calendar_id":"primary"},
+	  {"name":"b","credentials_file":"b.json","token_file":"bt.json","calendar_id":"primary"}
+	],"poll_interval":"5m","block_title":"Busy","web_ui":{"auth_token":""}}`
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodPut, "/api/config", "", body))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("PUT with unloadable existing config = %d, want 500", w.Code)
+	}
+}
+
 func TestPutConfig_RejectsTrailingData(t *testing.T) {
 	path := writeConfig(t, validYAML)
 	srv := newTestServer(t, "", func(o *Options) { o.ConfigPath = path })

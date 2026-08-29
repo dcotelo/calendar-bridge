@@ -286,6 +286,11 @@ func runUI(args []string) {
 		Addr:              cfg.WebUI.ListenAddr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bound the full request read (headers + body) so a slow client can't
+		// hold a connection open indefinitely trickling the body. The only
+		// body is a small JSON config (capped at 1MiB in the handler), so 30s
+		// is ample.
+		ReadTimeout: 30 * time.Second,
 		// Bound idle keep-alive connections. No short WriteTimeout on purpose:
 		// POST /api/sync runs a full sync pass inline (up to syncCycleTimeout),
 		// and a short write deadline would truncate a legitimate response.

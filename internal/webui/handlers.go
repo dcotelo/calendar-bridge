@@ -61,16 +61,21 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	// settings. Carry the existing web_ui fields forward when the client omits
 	// them (zero value = "unchanged"), so saving from the UI can never disable
 	// the UI or wipe its listen address / auth token and lock the operator out.
-	if existing, err := config.Load(s.configPath); err == nil {
-		if incoming.WebUI.AuthToken == "" {
-			incoming.WebUI.AuthToken = existing.WebUI.AuthToken
-		}
-		if !incoming.WebUI.Enabled {
-			incoming.WebUI.Enabled = existing.WebUI.Enabled
-		}
-		if incoming.WebUI.ListenAddr == "" {
-			incoming.WebUI.ListenAddr = existing.WebUI.ListenAddr
-		}
+	// If the existing config can't be loaded, refuse rather than persist a
+	// payload missing those fields (which would set enabled:false / empty addr).
+	existing, err := config.Load(s.configPath)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "cannot load current config to merge server settings")
+		return
+	}
+	if incoming.WebUI.AuthToken == "" {
+		incoming.WebUI.AuthToken = existing.WebUI.AuthToken
+	}
+	if !incoming.WebUI.Enabled {
+		incoming.WebUI.Enabled = existing.WebUI.Enabled
+	}
+	if incoming.WebUI.ListenAddr == "" {
+		incoming.WebUI.ListenAddr = existing.WebUI.ListenAddr
 	}
 
 	// Save validates first and writes atomically at 0600; an invalid config is
