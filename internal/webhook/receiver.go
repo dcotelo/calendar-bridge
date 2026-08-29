@@ -158,13 +158,13 @@ func (d *Debouncer) Notify() {
 
 func (d *Debouncer) fire(gen uint64) {
 	d.mu.Lock()
-	current := d.gen
-	d.mu.Unlock()
-	if gen != current {
+	defer d.mu.Unlock()
+	if gen != d.gen {
 		return // superseded by a newer Notify; discard this stale callback
 	}
-
-	// Non-blocking send: if a trigger is already queued, one is enough.
+	// Hold the lock through the send so a concurrent Notify can't advance the
+	// generation between the check and the send and let a stale callback emit.
+	// Non-blocking: if a trigger is already queued, one is enough.
 	select {
 	case d.C <- struct{}{}:
 	default:

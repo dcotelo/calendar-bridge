@@ -10,14 +10,17 @@ import (
 	"google.golang.org/api/googleapi"
 )
 
-// etagClient is a CalendarClient stub that models ETags and a one-time 412 on
-// delete, to exercise googleProvider.DeleteBlock's conditional-delete retry.
+// etagClient models ETags and a one-time 412 on delete. After the 412 it swaps
+// in afterConflict (the re-read result), so tests can assert that DeleteBlock
+// re-reads and re-verifies rather than blindly retrying with the stale ETag.
 type etagClient struct {
-	ev           *calendar.Event
-	deleteCalls  int
-	failFirst412 bool
-	lastIfMatch  []string
-	deleted      bool
+	ev            *calendar.Event
+	afterConflict *calendar.Event
+	deleteCalls   int
+	failFirst412  bool
+	lastIfMatch   []string
+	deleted       bool
+	conflicted    bool
 }
 
 func (e *etagClient) ListEvents(ctx context.Context, calendarID string, a, b time.Time) ([]*calendar.Event, error) {
@@ -29,6 +32,9 @@ func (e *etagClient) FindBlockBySource(ctx context.Context, calendarID, sa, se s
 func (e *etagClient) GetEvent(ctx context.Context, calendarID, id string) (*calendar.Event, error) {
 	if e.deleted {
 		return nil, nil
+	}
+	if e.conflicted && e.afterConflict != nil {
+		return e.afterConflict, nil
 	}
 	return e.ev, nil
 }
@@ -42,6 +48,7 @@ func (e *etagClient) DeleteEvent(ctx context.Context, calendarID, id, ifMatch st
 	e.deleteCalls++
 	e.lastIfMatch = append(e.lastIfMatch, ifMatch)
 	if e.failFirst412 && e.deleteCalls == 1 {
+		e.conflicted = true
 		return &googleapi.Error{Code: 412}
 	}
 	e.deleted = true
@@ -60,8 +67,7 @@ func ownedEvent(id, etag string) *calendar.Event {
 
 func TestDeleteBlock_UsesETagIfMatch(t *testing.T) {
 	c := &etagClient{ev: ownedEvent("blk", "etag-123")}
-	p := NewGoogleProvider(c)
-	if err := p.DeleteBlock(context.Background(), "primary", "blk"); err != nil {
+	if err := NewGoogleProvider(c).DeleteBlock(context.Background(), "primary", "blk"); err != nil {
 		t.Fatalf("DeleteBlock err = %v", err)
 	}
 	if c.deleteCalls != 1 {
@@ -72,22 +78,40 @@ func TestDeleteBlock_UsesETagIfMatch(t *testing.T) {
 	}
 }
 
-func TestDeleteBlock_RetriesOnPreconditionFailure(t *testing.T) {
-	c := &etagClient{ev: ownedEvent("blk", "etag-123"), failFirst412: true}
-	p := NewGoogleProvider(c)
-	if err := p.DeleteBlock(context.Background(), "primary", "blk"); err != nil {
-		t.Fatalf("DeleteBlock err = %v, want nil after 412 re-verify", err)
+func TestDeleteBlock_On412ReReadsAndUsesNewETag(t *testing.T) {
+	c := &etagClient{
+		ev:            ownedEvent("blk", "etag-old"),
+		afterConflict: ownedEvent("blk", "etag-new"),
+		failFirst412:  true,
+	}
+	if err := NewGoogleProvider(c).DeleteBlock(context.Background(), "primary", "blk"); err != nil {
+		t.Fatalf("DeleteBlock err = %v, want nil after 412 re-read", err)
 	}
 	if c.deleteCalls != 2 {
-		t.Errorf("delete calls = %d, want 2 (one 412 then success)", c.deleteCalls)
+		t.Fatalf("delete calls = %d, want 2", c.deleteCalls)
+	}
+	if c.lastIfMatch[0] != "etag-old" || c.lastIfMatch[1] != "etag-new" {
+		t.Errorf("If-Match sequence = %v, want [etag-old etag-new] (retry must use re-read ETag)", c.lastIfMatch)
+	}
+}
+
+func TestDeleteBlock_On412BecomesUntaggedRefuses(t *testing.T) {
+	c := &etagClient{
+		ev:            ownedEvent("blk", "etag-old"),
+		afterConflict: &calendar.Event{Id: "blk", Etag: "etag-new"}, // untagged after conflict
+		failFirst412:  true,
+	}
+	if err := NewGoogleProvider(c).DeleteBlock(context.Background(), "primary", "blk"); !errors.Is(err, ErrNotOwned) {
+		t.Fatalf("DeleteBlock err = %v, want ErrNotOwned after event became untagged", err)
+	}
+	if c.deleteCalls != 1 {
+		t.Errorf("delete calls = %d, want 1 (no second delete on an untagged re-read)", c.deleteCalls)
 	}
 }
 
 func TestDeleteBlock_RefusesUntaggedUnderETag(t *testing.T) {
-	// A real (untagged) event at the target ID must never be deleted.
 	c := &etagClient{ev: &calendar.Event{Id: "blk", Etag: "e"}}
-	p := NewGoogleProvider(c)
-	if err := p.DeleteBlock(context.Background(), "primary", "blk"); !errors.Is(err, ErrNotOwned) {
+	if err := NewGoogleProvider(c).DeleteBlock(context.Background(), "primary", "blk"); !errors.Is(err, ErrNotOwned) {
 		t.Errorf("DeleteBlock err = %v, want ErrNotOwned", err)
 	}
 	if c.deleteCalls != 0 {
@@ -96,14 +120,9 @@ func TestDeleteBlock_RefusesUntaggedUnderETag(t *testing.T) {
 }
 
 func TestInsertBlock_IdempotentReusesExisting(t *testing.T) {
-	// If a block for the source already exists, InsertBlock returns it instead
-	// of creating a duplicate (guards a retried insert after a lost success).
 	fake := newFakeCalendarClient()
-	existing := ownedEvent("existing-blk", "e")
-	fake.seed("existing-blk", existing)
-	p := NewGoogleProvider(fake)
-
-	got, err := p.InsertBlock(context.Background(), "primary", "Busy",
+	fake.seed("existing-blk", ownedEvent("existing-blk", "e"))
+	got, err := NewGoogleProvider(fake).InsertBlock(context.Background(), "primary", "Busy",
 		TimeSpan{DateTime: time.Now().Format(time.RFC3339)},
 		TimeSpan{DateTime: time.Now().Add(time.Hour).Format(time.RFC3339)},
 		ownedFor("a", "e1"))
