@@ -219,7 +219,17 @@ function collectConfig() {
     web_ui: { auth_token: "" }, // empty => server keeps existing token/enabled/listen_addr
   };
   const la = $("lookaheadDays").value.trim();
-  if (la !== "") cfg.lookahead_days = parseInt(la, 10) || 0; // omit when blank so defaults apply
+  if (la !== "") {
+    // parseInt("1e2", 10) === 1, silently truncating what the <input
+    // type="number"> field actually represents (100). Number() parses the
+    // whole value instead, and we reject anything that isn't a genuine
+    // non-negative integer rather than coercing it to 0.
+    const days = Number(la);
+    if (!Number.isSafeInteger(days) || days < 0) {
+      throw new Error("lookahead_days must be a non-negative integer");
+    }
+    cfg.lookahead_days = days;
+  } // omit when blank so defaults apply
   return cfg;
 }
 

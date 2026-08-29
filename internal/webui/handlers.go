@@ -2,6 +2,8 @@ package webui
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/dcotelo/calendar-bridge/internal/config"
@@ -50,9 +52,13 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Decoder.Decode stops after the first value and silently ignores trailing
-	// data; require the body to contain exactly one JSON object so a
-	// "{...}{...}" or "{...}junk" payload is rejected, not partially applied.
-	if dec.More() {
+	// data; require the body to contain exactly one JSON value. dec.More()
+	// alone isn't enough — it reports false for a stray "]" following a
+	// complete top-level object, since there's no open array to close. Decode
+	// once more and require io.EOF, which catches that case along with
+	// "{...}{...}" and "{...}junk".
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		s.writeError(w, http.StatusBadRequest, "invalid JSON: unexpected trailing data after the config object")
 		return
 	}

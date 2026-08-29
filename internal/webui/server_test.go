@@ -365,18 +365,30 @@ func TestPutConfig_FailsWhenExistingConfigUnloadable(t *testing.T) {
 }
 
 func TestPutConfig_RejectsTrailingData(t *testing.T) {
-	path := writeConfig(t, validYAML)
-	srv := newTestServer(t, "", func(o *Options) { o.ConfigPath = path })
-	// A valid object followed by a second value — Decoder.Decode alone would
-	// silently ignore the trailing data.
-	body := `{"accounts":[],"poll_interval":"5m"}{"extra":true}`
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, req(t, http.MethodPut, "/api/config", "", body))
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("trailing-data status = %d, want 400", w.Code)
+	// Decoder.Decode alone would silently ignore trailing data after the
+	// first JSON value, and dec.More() alone misses a stray "]" following a
+	// complete top-level object (there's no open array for it to close).
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"second JSON value", `{"accounts":[],"poll_interval":"5m"}{"extra":true}`},
+		{"stray closing bracket", `{"accounts":[],"poll_interval":"5m"}]`},
+		{"trailing garbage", `{"accounts":[],"poll_interval":"5m"}junk`},
 	}
-	if cfg, err := config.Load(path); err != nil || len(cfg.Accounts) != 2 {
-		t.Error("config changed after trailing-data PUT; want unchanged")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, validYAML)
+			srv := newTestServer(t, "", func(o *Options) { o.ConfigPath = path })
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req(t, http.MethodPut, "/api/config", "", tc.body))
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("trailing-data status = %d, want 400", w.Code)
+			}
+			if cfg, err := config.Load(path); err != nil || len(cfg.Accounts) != 2 {
+				t.Error("config changed after trailing-data PUT; want unchanged")
+			}
+		})
 	}
 }
 
@@ -434,18 +446,51 @@ func TestHostIsLoopbackAuthority(t *testing.T) {
 	}
 }
 
-func TestCSRF_RejectsReboundHost(t *testing.T) {
-	// No-token loopback mode: a request with a public Host (as in a DNS
-	// rebinding attack) must be rejected even though Origin matches Host.
-	srv := newTestServer(t, "")
-	r := req(t, http.MethodGet, "/api/config", "", "")
-	r.Host = "attacker.example:8090"
-	r.Header.Set("Origin", "http://attacker.example:8090")
-	r.Header.Set("Sec-Fetch-Site", "same-origin")
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Errorf("rebound-host status = %d, want 403", w.Code)
+func TestCSRF_Rejects(t *testing.T) {
+	cases := []struct {
+		name         string
+		host         string
+		origin       string
+		secFetchSite string
+	}{
+		{
+			// No-token loopback mode: a request with a public Host (as in a
+			// DNS rebinding attack) must be rejected even though Origin
+			// matches Host.
+			name:         "rebound host",
+			host:         "attacker.example:8090",
+			origin:       "http://attacker.example:8090",
+			secFetchSite: "same-origin",
+		},
+		{
+			name:         "cross-site Sec-Fetch-Site",
+			host:         "127.0.0.1:8090",
+			origin:       "http://127.0.0.1:8090",
+			secFetchSite: "cross-site",
+		},
+		{
+			name:   "origin authority differs from host",
+			host:   "127.0.0.1:8090",
+			origin: "http://evil.example",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t, "")
+			r := req(t, http.MethodGet, "/api/config", "", "")
+			r.Host = tc.host
+			if tc.origin != "" {
+				r.Header.Set("Origin", tc.origin)
+			}
+			if tc.secFetchSite != "" {
+				r.Header.Set("Sec-Fetch-Site", tc.secFetchSite)
+			}
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, r)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403", w.Code)
+			}
+		})
 	}
 }
 
