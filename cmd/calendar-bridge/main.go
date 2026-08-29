@@ -227,7 +227,10 @@ func runUI(args []string) {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "loading config: %v\n", err)
+		// config.Load embeds the path in its error; keep it out of stderr
+		// (shared logs) and emit a stable message. The operator knows the path
+		// they passed via -config.
+		fmt.Fprintln(os.Stderr, "ui: failed to load config (check -config path and file contents)")
 		os.Exit(1)
 	}
 	if !cfg.WebUI.Enabled {

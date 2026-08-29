@@ -49,6 +49,13 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	// Decoder.Decode stops after the first value and silently ignores trailing
+	// data; require the body to contain exactly one JSON object so a
+	// "{...}{...}" or "{...}junk" payload is rejected, not partially applied.
+	if dec.More() {
+		s.writeError(w, http.StatusBadRequest, "invalid JSON: unexpected trailing data after the config object")
+		return
+	}
 
 	// The browser form only edits account/sync fields, not the web_ui server
 	// settings. Carry the existing web_ui fields forward when the client omits

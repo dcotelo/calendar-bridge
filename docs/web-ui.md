@@ -12,13 +12,18 @@ calendar data and credentials never leave infrastructure you control).
 
 The UI can rewrite `config.yaml`, so it is treated as privileged:
 
-- **Loopback-only by default.** It binds `127.0.0.1:8090`. It **refuses to
-  start** on a non-loopback address (e.g. `0.0.0.0`) unless an auth token is
-  configured — so it can never be silently exposed to a network without
-  authentication.
-- **Bearer-token auth.** When `web_ui.auth_token` is set, every request must
-  send `Authorization: Bearer <token>`, compared in **constant time**. This is
-  mandatory to bind any non-loopback address.
+- **Loopback-only.** It binds `127.0.0.1:8090` and **refuses to bind a
+  non-loopback address** (e.g. `0.0.0.0`) because it serves plaintext HTTP —
+  a non-loopback listener would send the token and config in the clear. To
+  reach it from another host, use an SSH tunnel or a TLS-terminating reverse
+  proxy pointed at the loopback port (see below).
+- **Bearer-token auth on the API.** When `web_ui.auth_token` is set, the API
+  endpoints (`/api/*`) require `Authorization: Bearer <token>`, compared in
+  **constant time**. The index page (`GET /`) is intentionally public: a
+  browser can't attach that header to a top-level navigation, so the page must
+  load first and then collect the token for its API calls. The page contains no
+  secrets. A token on a loopback bind is defense-in-depth (e.g. on a shared
+  multi-user host).
 - **Credentials never enter the browser.** The UI edits config *fields*,
   including the credential/token file *paths* — it never reads or serves the
   *contents* of those files. OAuth secrets stay on disk. The interactive OAuth

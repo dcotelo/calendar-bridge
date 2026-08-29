@@ -6,11 +6,14 @@
 // The UI can read and rewrite config.yaml, so it is a privileged local admin
 // surface and is treated as one:
 //
-//   - It binds loopback (127.0.0.1) by default. It REFUSES to start on a
-//     non-loopback address unless an auth token is configured, so it can never
-//     be silently exposed to a network without authentication.
-//   - When an auth token is set, every request must carry it as a
-//     "Authorization: Bearer <token>" header, compared in constant time.
+//   - It binds loopback (127.0.0.1) only. It REFUSES to bind a non-loopback
+//     address because it serves plaintext HTTP; reach it remotely via an SSH
+//     tunnel or a TLS-terminating reverse proxy pointed at the loopback port.
+//   - When an auth token is set, the API endpoints (/api/*) require it as a
+//     "Authorization: Bearer <token>" header, compared in constant time. The
+//     index page (GET /) is intentionally public — a browser can't attach the
+//     header to a top-level navigation, so the page loads and then collects
+//     the token for its API calls. The page carries no secrets.
 //   - It never reads or serves the CONTENTS of credential or token files. The
 //     UI edits config fields (including the file paths), exactly like editing
 //     config.yaml by hand — the OAuth secrets themselves never enter the
@@ -94,9 +97,16 @@ func New(opts Options) (*Server, error) {
 	if opts.ConfigPath == "" {
 		return nil, fmt.Errorf("webui: ConfigPath is required")
 	}
-	if !config.IsLoopbackAddr(opts.ListenAddr) && opts.AuthToken == "" {
-		return nil, fmt.Errorf("webui: refusing to bind non-loopback address %q without an auth token; "+
-			"set web_ui.auth_token or bind a loopback address (127.0.0.1)", opts.ListenAddr)
+	// Refuse any non-loopback bind. The server speaks plaintext HTTP, so a
+	// non-loopback listener would send "Authorization: Bearer <token>" (and the
+	// config) in the clear to any on-path observer. We do not terminate TLS
+	// here. To reach the UI from another host, forward the loopback port over
+	// an SSH tunnel or put a TLS-terminating reverse proxy in front of it (see
+	// docs/web-ui.md) — the proxy connects to this loopback listener locally.
+	if !config.IsLoopbackAddr(opts.ListenAddr) {
+		return nil, fmt.Errorf("webui: refusing to bind non-loopback address %q: the UI serves plaintext HTTP and would "+
+			"expose the auth token; bind a loopback address (e.g. 127.0.0.1:8090) and reach it via an SSH tunnel or a "+
+			"TLS-terminating reverse proxy", opts.ListenAddr)
 	}
 	return &Server{
 		configPath: opts.ConfigPath,

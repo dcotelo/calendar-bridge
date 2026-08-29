@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -94,6 +95,31 @@ func TestSave_RejectsInvalidWithoutClobbering(t *testing.T) {
 	for _, e := range entries {
 		if e.Name() != "config.yaml" {
 			t.Errorf("stray file left after failed save: %q", e.Name())
+		}
+	}
+}
+
+func TestSave_CleansUpTempWhenRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	// Make the target path a directory so os.Rename(tmp, path) fails AFTER the
+	// temp file has been created and written — exercising the cleanup defer.
+	target := filepath.Join(dir, "config.yaml")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+
+	if err := validConfig().Save(target); err == nil {
+		t.Fatal("Save() error = nil, want error when target path is a directory")
+	}
+
+	// No stray temp file should remain in the directory.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".config-") && strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("leftover temp file after failed rename: %q", e.Name())
 		}
 	}
 }

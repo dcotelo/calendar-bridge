@@ -30,5 +30,5 @@ block_title: "Busy (calendar-bridge)"
 #
 # web_ui:
 #   enabled: true
-#   listen_addr: "127.0.0.1:8090"   # loopback-only default
-#   auth_token: "CHANGE-ME-long-random-secret"  # REQUIRED to bind a non-loopback address
+#   listen_addr: "127.0.0.1:8090"   # loopback only; non-loopback binds are refused
+#   auth_token: "CHANGE-ME-long-random-secret"  # optional; defense-in-depth on a shared host
