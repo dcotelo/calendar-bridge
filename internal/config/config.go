@@ -67,8 +67,11 @@ type Webhook struct {
 	// at PublicURL + "/webhook".
 	PublicURL string `yaml:"public_url"`
 
-	// ListenAddr is the local address the receiver binds (e.g. ":8080").
-	// Typically behind a TLS-terminating reverse proxy that forwards to it.
+	// ListenAddr is the local address the receiver binds (e.g. "127.0.0.1:8080").
+	// Typically behind a TLS-terminating reverse proxy that forwards to it —
+	// prefer a loopback address so the plaintext receiver isn't reachable
+	// directly, bypassing the proxy's TLS; bind wider only when the proxy
+	// runs elsewhere and network-level isolation covers the port instead.
 	ListenAddr string `yaml:"listen_addr"`
 
 	// VerificationToken is an opaque secret echoed back by Google in the
@@ -195,8 +198,17 @@ func (c *Config) Validate() error {
 			}
 		}
 		if c.Webhook.ChannelTTL != "" {
-			if _, err := time.ParseDuration(c.Webhook.ChannelTTL); err != nil {
+			d, err := time.ParseDuration(c.Webhook.ChannelTTL)
+			if err != nil {
 				return fmt.Errorf("webhook.channel_ttl %q is not a valid duration: %w", c.Webhook.ChannelTTL, err)
+			}
+			// time.ParseDuration accepts "0s" and negatives; googleWatcher
+			// treats a non-positive TTL as "omit Channel.Expiration", silently
+			// falling back to Google's own default instead of the operator's
+			// explicit value. Leaving channel_ttl unset (which uses the "24h"
+			// default) is the way to get provider-default behavior.
+			if d <= 0 {
+				return fmt.Errorf("webhook.channel_ttl must be positive, got %q", c.Webhook.ChannelTTL)
 			}
 		}
 	}

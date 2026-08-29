@@ -242,3 +242,33 @@ func TestLoad_WebhookPublicURLValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_WebhookChannelTTLValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		ttl     string
+		wantErr bool
+	}{
+		{"unset uses default", "", false},
+		{"positive duration", "24h", false},
+		{"zero rejected", "0s", true},
+		{"negative rejected", "-1h", true},
+		{"invalid duration rejected", "not-a-duration", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := twoAccounts + "\nwebhook:\n  enabled: true\n  verification_token: secret\n  public_url: https://cb.example.com\n"
+			if tc.ttl != "" {
+				body += "  channel_ttl: " + tc.ttl + "\n"
+			}
+			path := writeTempConfig(t, body)
+			_, err := Load(path)
+			if tc.wantErr && err == nil {
+				t.Errorf("Load() error = nil, want error for channel_ttl %q", tc.ttl)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Load() error = %v, want nil for channel_ttl %q", err, tc.ttl)
+			}
+		})
+	}
+}

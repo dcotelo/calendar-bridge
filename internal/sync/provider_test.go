@@ -161,6 +161,14 @@ func TestEngine_RunsThroughProviderBridge(t *testing.T) {
 	if !ok || acc != "a" || evID != "real-a-1" {
 		t.Errorf("bridged block source = (%q,%q,ok=%v), want (a, real-a-1, true)", acc, evID, ok)
 	}
+	// Only free/busy state may cross accounts: the block must carry the
+	// configured title, never the source event's title or details.
+	if blocks[0].Summary != "Busy (bridge)" {
+		t.Errorf("bridged block summary = %q, want %q (source content must not propagate)", blocks[0].Summary, "Busy (bridge)")
+	}
+	if blocks[0].Description != "" {
+		t.Errorf("bridged block description = %q, want empty", blocks[0].Description)
+	}
 
 	// Move the source, sync again: block must move, not duplicate, and keep
 	// its ownership through the neutral update path.

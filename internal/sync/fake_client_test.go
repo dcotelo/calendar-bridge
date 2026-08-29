@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	stdsync "sync"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // fakeCalendarClient is an in-memory CalendarClient used to exercise
@@ -155,8 +157,17 @@ func (f *fakeCalendarClient) DeleteEvent(ctx context.Context, calendarID, eventI
 	if f.failDelete != nil {
 		return f.failDelete
 	}
-	if _, ok := f.events[eventID]; !ok {
+	ev, ok := f.events[eventID]
+	if !ok {
 		return fmt.Errorf("fake: event %s not found", eventID)
+	}
+	// Model the real API's conditional delete: an If-Match that doesn't match
+	// the event's current ETag fails its precondition (412) rather than
+	// silently deleting, so a caller that deletes with a stale ETag is caught
+	// here instead of only in production. A blank ETag on either side (a
+	// caller/fixture that doesn't model ETags at all) is treated as a match.
+	if ifMatchETag != "" && ev.Etag != "" && ifMatchETag != ev.Etag {
+		return &googleapi.Error{Code: http.StatusPreconditionFailed}
 	}
 	delete(f.events, eventID)
 	return nil

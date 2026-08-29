@@ -18,6 +18,7 @@ type etagClient struct {
 	afterConflict *calendar.Event
 	deleteCalls   int
 	failFirst412  bool
+	always412     bool // event keeps changing concurrently forever: every delete 412s
 	lastIfMatch   []string
 	deleted       bool
 	conflicted    bool
@@ -47,7 +48,7 @@ func (e *etagClient) UpdateEvent(ctx context.Context, calendarID, id string, ev 
 func (e *etagClient) DeleteEvent(ctx context.Context, calendarID, id, ifMatch string) error {
 	e.deleteCalls++
 	e.lastIfMatch = append(e.lastIfMatch, ifMatch)
-	if e.failFirst412 && e.deleteCalls == 1 {
+	if e.always412 || (e.failFirst412 && e.deleteCalls == 1) {
 		e.conflicted = true
 		return &googleapi.Error{Code: 412}
 	}
@@ -106,6 +107,31 @@ func TestDeleteBlock_On412BecomesUntaggedRefuses(t *testing.T) {
 	}
 	if c.deleteCalls != 1 {
 		t.Errorf("delete calls = %d, want 1 (no second delete on an untagged re-read)", c.deleteCalls)
+	}
+}
+
+func TestDeleteBlock_ExhaustsRetriesOnPersistent412(t *testing.T) {
+	// The event keeps changing concurrently (still owned each re-read, but
+	// the ETag never settles), so every delete attempt hits 412. DeleteBlock
+	// must give up after its bounded number of attempts rather than loop
+	// forever, and must never delete an event it couldn't confirm as stable.
+	c := &etagClient{
+		ev:            ownedEvent("blk", "etag-1"),
+		afterConflict: ownedEvent("blk", "etag-2"), // still owned, still conflicting
+		always412:     true,
+	}
+	err := NewGoogleProvider(c).DeleteBlock(context.Background(), "primary", "blk")
+	if err == nil {
+		t.Fatal("DeleteBlock err = nil, want error after exhausting retries on persistent 412")
+	}
+	if errors.Is(err, ErrNotOwned) {
+		t.Errorf("DeleteBlock err = %v, want a retry-exhaustion error, not ErrNotOwned", err)
+	}
+	if c.deleteCalls != 2 {
+		t.Errorf("delete calls = %d, want 2 (bounded attempts, no unbounded retry)", c.deleteCalls)
+	}
+	if c.deleted {
+		t.Error("event marked deleted, want it left in place since ownership was never confirmed stable")
 	}
 }
 

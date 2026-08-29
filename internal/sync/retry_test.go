@@ -247,3 +247,114 @@ func (f *flakyClient) UpdateEvent(ctx context.Context, calendarID, eventID strin
 func (f *flakyClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
 	return f.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
 }
+
+// insertReconcileClient lets tests control InsertEvent's and
+// FindBlockBySource's behavior independently, to exercise
+// retryingClient.InsertEvent's ambiguous-insert reconciliation.
+type insertReconcileClient struct {
+	inner CalendarClient
+
+	insertCalls int
+	// insertErrs[i], if non-nil, is returned instead of delegating on the
+	// (i+1)th InsertEvent call; once the slice is exhausted, calls delegate
+	// to inner.
+	insertErrs []error
+
+	findCalls int
+	// When findOverride is set, FindBlockBySource returns findResult/findErr
+	// directly instead of delegating.
+	findOverride bool
+	findResult   *calendar.Event
+	findErr      error
+}
+
+func (c *insertReconcileClient) ListEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]*calendar.Event, error) {
+	return c.inner.ListEvents(ctx, calendarID, timeMin, timeMax)
+}
+func (c *insertReconcileClient) FindBlockBySource(ctx context.Context, calendarID, srcAccount, srcEventID string) (*calendar.Event, error) {
+	c.findCalls++
+	if c.findOverride {
+		return c.findResult, c.findErr
+	}
+	return c.inner.FindBlockBySource(ctx, calendarID, srcAccount, srcEventID)
+}
+func (c *insertReconcileClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
+	return c.inner.GetEvent(ctx, calendarID, eventID)
+}
+func (c *insertReconcileClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
+	idx := c.insertCalls
+	c.insertCalls++
+	if idx < len(c.insertErrs) && c.insertErrs[idx] != nil {
+		return nil, c.insertErrs[idx]
+	}
+	return c.inner.InsertEvent(ctx, calendarID, ev)
+}
+func (c *insertReconcileClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
+	return c.inner.UpdateEvent(ctx, calendarID, eventID, ev)
+}
+func (c *insertReconcileClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
+	return c.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
+}
+
+func TestRetryingClient_InsertEvent_ReconcilesAmbiguousResult(t *testing.T) {
+	block := ownedEvent("blk-1", "etag-1")
+
+	cases := []struct {
+		name          string
+		findOverride  bool
+		findResult    *calendar.Event
+		findErr       error
+		wantErr       bool
+		wantAmbiguous bool
+		wantInsert    int
+	}{
+		{
+			name:         "confirmed persisted: reconciles, does not insert again",
+			findOverride: true,
+			findResult:   block,
+			wantInsert:   1,
+		},
+		{
+			name:         "confirmed absent: safe to retry the insert",
+			findOverride: true,
+			findResult:   nil,
+			wantInsert:   2, // first (ambiguous) attempt + the retry
+		},
+		{
+			name:          "lookup itself fails: stop rather than risk a duplicate",
+			findOverride:  true,
+			findErr:       timeoutErr{},
+			wantErr:       true,
+			wantAmbiguous: true,
+			wantInsert:    1, // must NOT attempt a second insert while unconfirmed
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := &insertReconcileClient{
+				inner:        newFakeCalendarClient(),
+				insertErrs:   []error{timeoutErr{}}, // first attempt is ambiguous
+				findOverride: tc.findOverride,
+				findResult:   tc.findResult,
+				findErr:      tc.findErr,
+			}
+			c := NewRetryingClient(inner, fastPolicy(3), newTestLogger(), "test")
+			_, err := c.InsertEvent(context.Background(), "primary", ownedEvent("blk-1", ""))
+
+			if tc.wantErr && err == nil {
+				t.Fatal("InsertEvent error = nil, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("InsertEvent error = %v, want nil", err)
+			}
+			var ambiguous *ambiguousInsertError
+			if tc.wantAmbiguous && !errors.As(err, &ambiguous) {
+				t.Errorf("InsertEvent error = %v, want *ambiguousInsertError", err)
+			}
+			if inner.insertCalls != tc.wantInsert {
+				t.Errorf("InsertEvent calls = %d, want %d", inner.insertCalls, tc.wantInsert)
+			}
+		})
+	}
+}

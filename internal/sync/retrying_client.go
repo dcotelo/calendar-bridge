@@ -2,11 +2,29 @@ package sync
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
 )
+
+// ambiguousInsertError is returned by retryingClient.InsertEvent when the
+// insert's own result was ambiguous (e.g. a network timeout) and the
+// reconciliation lookup used to resolve that ambiguity itself failed, so it's
+// still unknown whether the earlier insert persisted. It deliberately does
+// not unwrap to either wrapped error, so isTransient never classifies it as
+// retryable: retrying InsertEvent again here could create a duplicate owned
+// block. The engine's next full sync pass re-checks FindBlockBySource before
+// any insert, so that's where this resolves instead.
+type ambiguousInsertError struct {
+	insertErr error
+	findErr   error
+}
+
+func (e *ambiguousInsertError) Error() string {
+	return fmt.Sprintf("insert result is ambiguous (%v) and could not be reconciled (%v); leaving it for the next sync pass rather than risk a duplicate block", e.insertErr, e.findErr)
+}
 
 // retryingClient decorates a CalendarClient with transient-error retry and
 // exponential backoff. Because it wraps the CalendarClient interface rather
@@ -83,17 +101,28 @@ func (c *retryingClient) InsertEvent(ctx context.Context, calendarID string, ev 
 			out = created
 			return nil
 		}
+		if !isAmbiguous(err) || own.SourceAccount == "" || own.SourceEventID == "" {
+			return err
+		}
 		// A network timeout is ambiguous: the insert may have persisted on
 		// the server even though we saw no response. Reconcile with a
 		// lookup before letting the caller retry, so a retried InsertEvent
 		// never creates a second busy block for the same source event.
-		if isAmbiguous(err) && own.SourceAccount != "" && own.SourceEventID != "" {
-			if existing, findErr := c.inner.FindBlockBySource(ctx, calendarID, own.SourceAccount, own.SourceEventID); findErr == nil && existing != nil {
-				out = existing
-				return nil
-			}
+		existing, findErr := c.inner.FindBlockBySource(ctx, calendarID, own.SourceAccount, own.SourceEventID)
+		switch {
+		case findErr == nil && existing != nil:
+			// Confirmed: the earlier insert persisted. Use it, no retry.
+			out = existing
+			return nil
+		case findErr == nil:
+			// Confirmed: nothing persisted yet. Safe to retry the insert.
+			return err
+		default:
+			// The reconciliation lookup itself failed, so it's still
+			// unknown whether the earlier insert persisted. Don't guess by
+			// retrying InsertEvent again — stop with a non-retryable error.
+			return &ambiguousInsertError{insertErr: err, findErr: findErr}
 		}
-		return err
 	})
 	return out, err
 }

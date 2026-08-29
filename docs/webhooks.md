@@ -85,6 +85,10 @@ gracefully shut down and all channels are stopped best-effort.
 - **HTTPS required.** Google refuses to deliver to non-HTTPS callback URLs;
   config validation rejects a non-`https://` `public_url` up front. In
   practice you terminate TLS at a reverse proxy that forwards to `listen_addr`.
+  For a same-host proxy, bind `listen_addr` to loopback (e.g.
+  `127.0.0.1:8080`) so the plaintext receiver can't be reached directly,
+  bypassing TLS; if the proxy runs elsewhere (e.g. a separate container),
+  isolate the port at the network level instead.
 - **DoS surface.** The receiver does minimal work and debounces, so a flood of
   authenticated notifications collapses into at most one sync per debounce
   window. `ReadHeaderTimeout` is set to bound slow-header attacks.
@@ -100,7 +104,7 @@ gracefully shut down and all channels are stopped best-effort.
    webhook:
      enabled: true
      public_url: https://cb.example.com   # must be https
-     listen_addr: ":8080"
+     listen_addr: "127.0.0.1:8080"        # loopback; see the security note above
      verification_token: "<long random secret>"
      channel_ttl: "24h"
      debounce_interval: "5s"

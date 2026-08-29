@@ -31,7 +31,11 @@ block_title: "Busy (calendar-bridge)"
 # webhook:
 #   enabled: true
 #   public_url: https://cb.example.com   # must be https; receiver lives at /webhook
-#   listen_addr: ":8080"                 # local bind, behind a TLS-terminating proxy
+#   listen_addr: "127.0.0.1:8080"        # loopback, behind a TLS-terminating proxy on
+#                                        # the same host; if the proxy runs elsewhere
+#                                        # (e.g. a separate container), bind the address
+#                                        # it reaches and isolate the port at the network
+#                                        # level instead — never expose plaintext HTTP
 #   verification_token: "CHANGE-ME-long-random-secret"  # secret; authenticates notifications
 #   channel_ttl: "24h"                   # watch channel lifetime; renewed ahead of expiry
 #   debounce_interval: "5s"              # coalesce a burst of changes into one sync
