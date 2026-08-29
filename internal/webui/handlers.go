@@ -84,7 +84,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.logger.Info("webui: config updated", "path", s.configPath, "remote", r.RemoteAddr)
+	s.logger.Info("webui: config updated", "remote", r.RemoteAddr)
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
 

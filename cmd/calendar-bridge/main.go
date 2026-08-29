@@ -263,8 +263,12 @@ func runUI(args []string) {
 	statusFn := func() webui.Status {
 		current, err := config.Load(*configPath)
 		if err != nil {
-			logger.Warn("webui: status could not load config", "error", err)
-			return webui.Status{LastError: "config load failed: " + err.Error()}
+			// config.Load embeds the config path in its error text; keep that
+			// out of both the shared log and the reported status (this runs
+			// on every page load, sync, and reload) and log/report a stable,
+			// path-free message instead.
+			logger.Warn("webui: status could not load config")
+			return webui.Status{LastError: "config load failed (check -config path and file contents)"}
 		}
 		return webui.Status{AccountsNum: len(current.Accounts)}
 	}

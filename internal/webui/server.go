@@ -87,8 +87,8 @@ type Options struct {
 }
 
 // New builds a Server. It returns an error if the configuration is unsafe:
-// binding a non-loopback address without an auth token is refused, so the UI
-// is never exposed to a network unauthenticated.
+// binding any non-loopback address is refused (AuthToken notwithstanding),
+// so the UI is never directly exposed to a network over plaintext HTTP.
 func New(opts Options) (*Server, error) {
 	logger := opts.Logger
 	if logger == nil {
@@ -145,12 +145,12 @@ func (s *Server) Handler() http.Handler {
 // whose Origin is set and doesn't match the request host.
 func (s *Server) csrfGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// DNS-rebinding defense: in the default loopback+no-token mode, an
-		// attacker page on a rebound hostname can send matching Origin/Host to
-		// the loopback listener. Require the request Host to be a loopback
-		// authority so a rebound public hostname is rejected. When an auth
-		// token is configured (the only way to bind non-loopback), the token
-		// is the guard and we don't constrain Host.
+		// DNS-rebinding defense: in the default no-token mode, an attacker page
+		// on a rebound hostname can send matching Origin/Host to the loopback
+		// listener. Require the request Host to be a loopback authority so a
+		// rebound public hostname is rejected. When an auth token is
+		// configured, the token itself is the guard (a rebinding attacker
+		// can't obtain it), so we don't additionally constrain Host.
 		if s.authToken == "" && !hostIsLoopbackAuthority(r.Host) {
 			http.Error(w, "unexpected Host", http.StatusForbidden)
 			return

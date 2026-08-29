@@ -49,8 +49,8 @@ ssh -L 8090:127.0.0.1:8090 you@your-server
 # config.yaml
 web_ui:
   enabled: true
-  listen_addr: "127.0.0.1:8090"   # default; loopback-only
-  # auth_token: "<long random secret>"  # REQUIRED to bind a non-loopback addr
+  listen_addr: "127.0.0.1:8090"   # required to be loopback; non-loopback binds are refused
+  # auth_token: "<long random secret>"  # optional; defense-in-depth behind a reverse proxy
 ```
 
 Run it:

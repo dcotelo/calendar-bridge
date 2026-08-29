@@ -55,24 +55,29 @@ type Config struct {
 // WebUI configures the local configuration management web UI.
 //
 // Security model: the UI can read and write config.yaml, so it is treated as
-// a privileged local admin surface. It binds loopback (127.0.0.1) by default
-// and REFUSES to bind a non-loopback address unless AuthToken is set, so it is
-// never silently exposed to a network without authentication. Even so, it
-// never reads or serves credential/token file *contents* — those stay on disk;
-// the UI only edits the file paths, exactly like editing config.yaml by hand.
+// a privileged local admin surface. It binds loopback (127.0.0.1) only and
+// REFUSES to bind any non-loopback address, regardless of AuthToken — it
+// serves plaintext HTTP, so a direct non-loopback bind would send the
+// Authorization header (and the config) in the clear. Reach it remotely via
+// an SSH tunnel or a TLS-terminating reverse proxy pointed at the loopback
+// port (see docs/web-ui.md). It never reads or serves credential/token file
+// *contents* — those stay on disk; the UI only edits the file paths, exactly
+// like editing config.yaml by hand.
 type WebUI struct {
 	// Enabled turns the `ui` server on. When false the subcommand refuses to
 	// start.
 	Enabled bool `yaml:"enabled" json:"enabled"`
 
 	// ListenAddr is the address the UI binds. Defaults to "127.0.0.1:8090".
-	// A non-loopback host (e.g. "0.0.0.0:8090") is only permitted when
-	// AuthToken is set.
+	// Must be a loopback address — a non-loopback host (e.g. "0.0.0.0:8090")
+	// is refused unconditionally, AuthToken notwithstanding.
 	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
 
-	// AuthToken, when set, is required as a Bearer token on every request
-	// (compared in constant time). It is mandatory to bind a non-loopback
-	// address. Treat it as a credential.
+	// AuthToken, when set, is required as a Bearer token on every /api/*
+	// request (compared in constant time). Set it when reaching the UI
+	// through a reverse proxy (so the proxy's callers must authenticate);
+	// it does not by itself permit a non-loopback direct bind. Treat it as
+	// a credential.
 	AuthToken string `yaml:"auth_token" json:"auth_token,omitempty"`
 }
 

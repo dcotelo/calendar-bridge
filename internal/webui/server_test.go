@@ -3,6 +3,7 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -303,6 +304,17 @@ func TestSync_RejectsConcurrent(t *testing.T) {
 	close(release)
 }
 
+func TestSync_CallbackErrorReturns500(t *testing.T) {
+	srv := newTestServer(t, "", func(o *Options) {
+		o.Sync = func() error { return errors.New("calendar api unavailable") }
+	})
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodPost, "/api/sync", "", ""))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("failed sync status = %d, want 500", w.Code)
+	}
+}
+
 func TestIndex_ServedWithoutAuthEvenWhenTokenSet(t *testing.T) {
 	// The critical fix: a browser can't send Authorization on a top-level
 	// navigation, so GET / must return the page even when a token is configured.
@@ -486,8 +498,9 @@ func TestIndex_ServedWithSecurityHeaders(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("index status = %d, want 200", w.Code)
 	}
-	if w.Header().Get("Content-Security-Policy") == "" {
-		t.Error("index missing Content-Security-Policy header")
+	wantCSP := "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'"
+	if got := w.Header().Get("Content-Security-Policy"); got != wantCSP {
+		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
 	}
 	if w.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Error("index missing X-Content-Type-Options: nosniff")

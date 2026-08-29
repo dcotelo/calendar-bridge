@@ -145,11 +145,14 @@ const accountsEl = $("accounts");
 function field(labelText, cls, value) {
   const wrap = document.createElement("div");
   const lab = document.createElement("label");
-  lab.textContent = labelText;
+  lab.appendChild(document.createTextNode(labelText));
   const inp = document.createElement("input");
   inp.className = cls;
   inp.value = value == null ? "" : String(value);
-  wrap.appendChild(lab); wrap.appendChild(inp);
+  // Nest the input inside the label so the two are associated (screen
+  // readers announce the field by name) without needing generated ids.
+  lab.appendChild(inp);
+  wrap.appendChild(lab);
   return wrap;
 }
 function accountRow(a) {
