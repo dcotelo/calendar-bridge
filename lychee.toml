@@ -14,16 +14,23 @@ no_progress = true
 # Binary assets: nothing to check inside them.
 exclude_path = ["docs/assets"]
 
+# Three exclusions, each for something that does not exist YET rather than
+# something that is broken. Everything else, including every other badge, is
+# checked for real.
+#
+# The first two must be REMOVED when v0.1.0 is tagged, and the third once the
+# CodeQL workflow has run on the default branch. Leaving any of them here
+# afterwards would mean a genuinely broken badge link goes unnoticed. Tracked
+# with the first-release item in docs/BACKLOG.md.
+#
+# All three badges still RENDER — shields.io, pkg.go.dev and GitHub serve the
+# images regardless — so it is only the link targets that 404.
 exclude = [
-  # Badge targets that cannot resolve until the first release exists:
-  # pkg.go.dev has nothing to index until a version is published, and the GHCR
-  # package page does not exist until an image is pushed. Both badges still
-  # RENDER — shields.io and pkg.go.dev serve the images regardless — so it is
-  # only the link targets that 404.
-  #
-  # REMOVE BOTH when v0.1.0 is tagged. Leaving them here afterwards would mean
-  # a genuinely broken badge link goes unnoticed. Tracked with the
-  # first-release item in docs/BACKLOG.md.
-  '^https://pkg\.go\.dev/github\.com/dcotelo/calendar-bridge$',
-  '^https://github\.com/dcotelo/calendar-bridge/pkgs/container/calendar-bridge$',
+  # The GHCR package page, created by the first image push from the release
+  # workflow.
+  'https://github\.com/dcotelo/calendar-bridge/pkgs/container/.*',
+  # Populated when the module proxy first sees a tagged version.
+  'https://pkg\.go\.dev/github\.com/dcotelo/calendar-bridge.*',
+  # A workflow badge 404s until that workflow has run on the default branch.
+  'https://github\.com/dcotelo/calendar-bridge/actions/workflows/codeql\.yml/badge\.svg',
 ]

@@ -1,119 +1,171 @@
-# calendar-bridge
+<div align="center">
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:1a1b27,50:414868,100:7aa2f7&height=200&section=header&text=calendar-bridge&fontSize=48&fontColor=c0caf5&animation=fadeIn&fontAlignY=35&desc=Busy-time%20sync%20across%20your%20Google%20Calendars,%20self-hosted&descSize=16&descAlignY=55" alt="calendar-bridge — busy-time sync across your Google Calendars, self-hosted" />
+
+<a href="https://dcotelo.dev">
+  <img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&weight=500&size=20&pause=1200&center=true&vCenter=true&width=520&color=7AA2F7&lines=One%20meeting%2C%20blocked%20on%20every%20calendar.;Free%2Fbusy%20only%20%E2%80%94%20never%20event%20content.;Runs%20on%20your%20infrastructure%2C%20not%20ours.;No%20third%20party%20ever%20sees%20your%20calendar." alt="One meeting, blocked on every calendar. Free/busy only, never event content. Runs on your infrastructure, not ours. No third party ever sees your calendar." />
+</a>
+
+<br/>
+
+[![Docs](https://img.shields.io/badge/Docs-1a1b27?style=for-the-badge&logo=readthedocs&logoColor=7aa2f7)](docs/)
+[![dcotelo.dev](https://img.shields.io/badge/dcotelo.dev-1a1b27?style=for-the-badge&logo=safari&logoColor=7aa2f7)](https://dcotelo.dev)
+[![Report an issue](https://img.shields.io/badge/Report%20an%20issue-1a1b27?style=for-the-badge&logo=github&logoColor=7aa2f7)](https://github.com/dcotelo/calendar-bridge/issues/new/choose)
 
 [![CI](https://github.com/dcotelo/calendar-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/dcotelo/calendar-bridge/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/dcotelo/calendar-bridge/actions/workflows/codeql.yml/badge.svg)](https://github.com/dcotelo/calendar-bridge/actions/workflows/codeql.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/dcotelo/calendar-bridge.svg)](https://pkg.go.dev/github.com/dcotelo/calendar-bridge)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dcotelo/calendar-bridge)](https://goreportcard.com/report/github.com/dcotelo/calendar-bridge)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/dcotelo/calendar-bridge/badge)](https://scorecard.dev/viewer/?uri=github.com/dcotelo/calendar-bridge)
+[![Go version](https://img.shields.io/github/go-mod/go-version/dcotelo/calendar-bridge)](go.mod)
+[![Latest release](https://img.shields.io/github/v/release/dcotelo/calendar-bridge?sort=semver)](https://github.com/dcotelo/calendar-bridge/releases)
+[![GHCR](https://img.shields.io/badge/ghcr.io-calendar--bridge-1a1b27?logo=docker&logoColor=7aa2f7)](https://github.com/dcotelo/calendar-bridge/pkgs/container/calendar-bridge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
-Self-hosted, open-source busy-time sync across multiple Google Calendar
-accounts (personal Gmail + Google Workspace domains). Runs on your own
-infrastructure. No third-party service ever sees your calendar data.
+<img src="https://skillicons.dev/icons?i=go,docker,kubernetes,githubactions&perline=12" alt="Go, Docker, Kubernetes, GitHub Actions" />
 
-## The problem
+**Self-hosted busy-time sync across multiple Google Calendar accounts.**
+One meeting on one calendar blocks the slot on all the others — without any
+third-party service ever seeing your calendar.
 
-Google Calendar has no native way to auto-block time across separate
-accounts, and it's worse across different Workspace domains (personal Gmail
-+ multiple company Workspaces). Hosted tools like OneCal or Calendar Bridge
-solve this, but your event data flows through their servers to do it.
-calendar-bridge does the same job entirely inside infrastructure you
-control.
+</div>
+
+---
+
+<div align="center">
+  <img src="docs/assets/screenshots/sync-complete-dark.png" alt="The calendar-bridge web UI after a successful pass: three healthy accounts, six blocks created, two updated, one removed" width="900" />
+</div>
+
+---
+
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [What it does](#what-it-does)
+- [What it deliberately does not do](#what-it-deliberately-does-not-do)
+- [Quickstart](#quickstart)
+- [How it works](#how-it-works)
+- [Screenshots](#screenshots)
+- [Configuration](#configuration)
+- [Deployment](#deployment)
+- [Security and privacy](#security-and-privacy)
+- [Known limitations](#known-limitations)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+
+---
+
+## Why this exists
+
+Google Calendar has no native way to block time across separate accounts, and
+it is worse across different Workspace domains — a personal Gmail account plus
+one or more employers or clients, each with its own admin and its own tenant.
+Nobody can see anybody else's calendar, so everybody books you at 2pm.
+
+Hosted tools solve this well. The trade is that your event data flows through
+their servers to do it.
+
+For plenty of people that is fine. If it is not — because of a work policy, a
+client NDA, or plain preference — calendar-bridge does the same job entirely on
+infrastructure you control. **Nothing leaves your machine except ordinary
+Calendar API calls to Google**, which already has your calendar. No analytics,
+no telemetry, no update check, no server to be breached.
+
+That is the whole argument. If it does not move you, use a hosted tool; they are
+less work.
+
+---
 
 ## What it does
 
-- Polls N Google Calendar accounts you authenticate (OAuth2; tokens never
-  leave your infra).
-- When a real event appears, moves, or is removed on one calendar, upserts
-  or deletes a matching "Busy" block on every other configured calendar.
-- Tags every block it creates via Calendar API `extendedProperties` so it
-  can always tell "a real event a human made" apart from "a block
-  calendar-bridge made" — this is what prevents sync loops and accidental
-  deletion of real events.
-- Propagates free/busy state only, one-way per event. Titles, attendees,
-  locations, and descriptions never leave the calendar an event was created
-  on; the block's title is a fixed string you configure.
+- Polls the Google Calendar accounts you authenticate. Tokens never leave your
+  infrastructure.
+- When a real event appears, moves, or disappears on one calendar, creates,
+  moves, or removes a matching **"Busy"** block on every other configured
+  calendar.
+- Tags every block it creates with a private `calendarBridgeOwner` extended
+  property. That one bit is what lets it tell "a placeholder I made" from "a real
+  event a human made" — which is what prevents sync loops and makes it safe to
+  delete anything at all.
+- Propagates **free/busy state only**. Titles, descriptions, locations and
+  attendees never cross an account boundary; the block's title is a fixed string
+  you configure.
+- Skips events you marked **Free** and invitations you **declined**. Declining a
+  meeting and still losing the slot everywhere else would be the most annoying
+  thing this tool could do.
+- Isolates failures per account. An expired token on one account does not stop
+  the others syncing — and, importantly, does not cause its blocks to be
+  garbage-collected elsewhere.
 
-## What it does *not* do
+## What it deliberately does not do
 
-- **Not** a full two-way mirror. Event content is never copied — only a
-  generic "Busy" placeholder.
-- **Polling by default, not real-time.** It polls on an interval (default 5
-  minutes). Google Calendar API push notifications (webhooks) are available as
-  opt-in for near-instant propagation — see
-  [docs/webhooks.md](docs/webhooks.md) and the [Roadmap](#roadmap); polling
-  stays on as the safety net.
-- **Not** a replacement for genuine multi-calendar overlay views (Google's
-  own "other calendars" sidebar already does that within one account).
+- **Not a two-way mirror.** Event content is never copied. Only a generic
+  placeholder crosses. This is enforced by the type system, not by convention —
+  see [ADR 0003](docs/adr/0003-no-event-content-propagation.md).
+- **Polling by default, not real-time.** Default latency is up to
+  `poll_interval` (5 minutes). [Push notifications](docs/webhooks.md) are opt-in
+  for near-instant propagation; polling stays on as the safety net.
+- **Not a multi-calendar overlay.** Google's own "other calendars" sidebar
+  already does that within one account.
+- **Not multi-user.** One process serves one person's set of accounts.
+- **No hosted component.** There is nothing to sign up for.
 
-## How it works
+---
 
-Each configured account is polled for events in a rolling window (default:
-30 days ahead, plus a 24h look-back buffer for events already in progress).
-Every pass:
+## Quickstart
 
-1. **Fetch.** List events on every account, split into "real" events (made
-   by a human) and "owned" blocks (previously created by calendar-bridge,
-   identified by the `calendarBridgeOwner` extended property).
-2. **Propagate.** For every real event on every account, ensure a matching
-   busy block exists on every *other* account — create it if missing,
-   update its time if the source event moved, leave it alone if already
-   correct.
-3. **Garbage collect.** Delete any owned block whose source event is no
-   longer live (deleted, cancelled, or moved out of the sync window).
+The fastest path from nothing to a first sync.
 
-If one account's token has expired or its API call fails, that account is
-excluded from the current pass (fetch, propagation, *and* GC) rather than
-aborting the whole run — the other healthy accounts still get synced, and
-the error is surfaced in the return value / logs so you can act on it.
+### 1. Create OAuth credentials, once per account
 
-```text
-                 ┌──────────────┐
-                 │   personal   │
-                 │  (Gmail)     │
-                 └──────┬───────┘
-                         │ real events
-              ┌──────────┼──────────┐
-              ▼                     ▼
-      ┌──────────────┐      ┌──────────────┐
-      │  work-acme   │◄────►│  work-other  │
-      │ (Workspace)  │      │ (Workspace)  │
-      └──────────────┘      └──────────────┘
-        Busy blocks flow in every direction; only free/busy
-        state crosses account boundaries, never event content.
-```
+For each Google account you want to sync:
 
-## Setup
-
-### 1. Create OAuth2 credentials per Google account
-
-For each account you want to sync (personal Gmail, each Workspace domain):
-
-1. Create/select a project in [Google Cloud Console](https://console.cloud.google.com/).
+1. Create or select a project in the [Google Cloud Console](https://console.cloud.google.com/).
 2. Enable the **Google Calendar API**.
-3. Create an OAuth 2.0 Client ID, application type **Desktop app**.
+3. Create an **OAuth 2.0 Client ID**, application type **Desktop app**.
 4. Download the credentials JSON.
-5. If the app is in Testing mode, add that account as a test user under
-   **APIs & Services → OAuth consent screen → Test users**.
+5. Under **APIs & Services → OAuth consent screen**, set the publishing status
+   to **In production**.
 
-### 2. Configure
+> **Step 5 matters more than it looks.** In **Testing** status Google expires
+> refresh tokens after seven days, and you will be re-authorizing every account
+> every week forever. Production status needs no verification review for an app
+> only you use — you click through an "unverified app" interstitial during the
+> next step.
+
+### 2. Install
 
 ```bash
-cp config.example.yaml config.yaml
-mkdir -p secrets
-# place each downloaded credentials JSON under secrets/, matching the
-# credentials_file paths in config.yaml
+go install github.com/dcotelo/calendar-bridge/cmd/calendar-bridge@latest
+calendar-bridge version
 ```
 
-Edit `config.yaml` with one entry per account (minimum 2):
+Or grab a [release binary](https://github.com/dcotelo/calendar-bridge/releases),
+or use the container image (`ghcr.io/dcotelo/calendar-bridge`) — but do the
+authorization below on a machine with a browser either way.
+
+### 3. Configure
+
+```bash
+mkdir -p ~/.config/calendar-bridge/secrets
+chmod 700 ~/.config/calendar-bridge/secrets
+cd ~/.config/calendar-bridge
+# put each downloaded credentials JSON in secrets/
+```
+
+Write `config.yaml`. Use **absolute paths** — they are resolved against the
+process's working directory, not against this file:
 
 ```yaml
 accounts:
   - name: personal
-    credentials_file: secrets/personal-credentials.json
-    token_file: secrets/personal-token.json
+    credentials_file: /home/you/.config/calendar-bridge/secrets/personal-credentials.json
+    token_file: /home/you/.config/calendar-bridge/secrets/personal-token.json
     calendar_id: primary
   - name: work-acme
-    credentials_file: secrets/work-acme-credentials.json
-    token_file: secrets/work-acme-token.json
+    credentials_file: /home/you/.config/calendar-bridge/secrets/work-acme-credentials.json
+    token_file: /home/you/.config/calendar-bridge/secrets/work-acme-token.json
     calendar_id: primary
 
 poll_interval: 5m
@@ -121,165 +173,319 @@ lookahead_days: 30
 block_title: "Busy (calendar-bridge)"
 ```
 
-### 3. Authorize each account
+### 4. Authorize each account
 
 ```bash
-go run ./cmd/calendar-bridge auth -config config.yaml -account personal
-go run ./cmd/calendar-bridge auth -config config.yaml -account work-acme
+calendar-bridge auth -config config.yaml -account personal
+calendar-bridge auth -config config.yaml -account work-acme
 ```
 
-Each run prints an authorization URL. Open it, sign in, approve, then paste
-back either the authorization **code** or the **full redirect URL** the
-browser lands on (both are accepted — most browsers show something like
-`http://localhost:1/?code=4/0A...&scope=...`, so you don't need to pick the
-code out by hand). This writes the account's token file under `secrets/`.
+Each prints a URL. Open it, approve, then paste back either the code or the
+whole redirect URL your browser lands on — both work.
 
-### 4. Run
+<div align="center">
+  <img src="docs/assets/demos/auth.gif" alt="Terminal recording of the authorization flow: calendar-bridge prints a Google consent URL and waits for the code or redirect URL to be pasted back" width="820" />
+</div>
+
+### 5. Check it, then run it
 
 ```bash
-# one-off pass, useful to verify config before leaving it running
-go run ./cmd/calendar-bridge sync-once -config config.yaml
-
-# continuous loop, polling at the configured interval, exits cleanly on
-# SIGINT/SIGTERM
-go run ./cmd/calendar-bridge run -config config.yaml
+# Reports exactly what it WOULD change. Writes nothing.
+calendar-bridge sync-once -config config.yaml -dry-run
 ```
 
-## Configuration web UI (optional)
-
-Prefer not to hand-edit YAML? calendar-bridge ships an optional local web UI to
-manage accounts and sync settings, view status, and trigger a manual sync.
-
-```yaml
-# config.yaml
-web_ui:
-  enabled: true
-  listen_addr: "127.0.0.1:8090"   # loopback only (non-loopback binds are refused)
-  # auth_token: "<long random secret>"  # optional; defense-in-depth on a shared host
-```
+**You should now see** a line per account reporting how many real events and
+owned blocks it found, then a summary of what would be created. If an account is
+unauthorized, the error names it and the exact command to fix it.
 
 ```bash
-go run ./cmd/calendar-bridge ui -config config.yaml
-# open http://127.0.0.1:8090
+# Do it for real.
+calendar-bridge sync-once -config config.yaml
 ```
 
-It's **off by default** and built as a local admin surface, not a hosted
-service: it binds loopback only and **refuses non-loopback binds** (it serves
-plaintext HTTP, so exposing it would leak the token) — reach it from elsewhere
-via an SSH tunnel or a TLS-terminating reverse proxy. It **never sends
-credential or token file contents to the browser** (only the file paths, like
-editing the YAML by hand), config writes are validated and saved atomically at
-`0600`, and the OAuth flow stays in the CLI. See [docs/web-ui.md](docs/web-ui.md) for
-the full security model.
-
-## Deploying
-
-### Fly.io (recommended, light lift)
+**You should now see** `Busy (calendar-bridge)` blocks appear on each calendar,
+mirroring the other's events. Once that looks right:
 
 ```bash
-fly launch --no-deploy
-fly volumes create cb_config --size 1 -a <your-app-name>
-
-# Get config.yaml + secrets/ (credentials + tokens) onto the volume.
-# Easiest path: run a one-off machine with the volume mounted and sftp your
-# local files in:
-fly ssh console -a <your-app-name> -C "mkdir -p /app/config/secrets"
-fly ssh sftp shell -a <your-app-name>
-# > put config.yaml /app/config/config.yaml
-# > put secrets/personal-credentials.json /app/config/secrets/personal-credentials.json
-# > put secrets/personal-token.json /app/config/secrets/personal-token.json
-# ... repeat per account
-
-fly deploy
+# Run continuously. Exits cleanly on SIGINT/SIGTERM.
+calendar-bridge run -config config.yaml
 ```
 
-Run `auth` locally first (step 3 above) so token files already exist before
-you upload them — the OAuth interactive flow needs a browser, which a
-headless Fly machine doesn't have.
+Then set it up to start on its own — see [Deployment](#deployment).
 
-### Docker / self-hosted
+<div align="center">
+  <img src="docs/assets/demos/cli.gif" alt="Terminal recording of the calendar-bridge CLI: version output, the help text, and the documented exit codes" width="820" />
+</div>
 
-```bash
-docker build -t calendar-bridge .
-docker run -v $(pwd)/config.yaml:/app/config/config.yaml:ro \
-           -v $(pwd)/secrets:/app/config/secrets:ro \
-           calendar-bridge
+---
+
+## How it works
+
+Every pass does three things: fetch, propagate, garbage-collect.
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{
+  'primaryColor':'#20222f','primaryTextColor':'#c0caf5','primaryBorderColor':'#414868',
+  'lineColor':'#7aa2f7','secondaryColor':'#292c3d','tertiaryColor':'#1a1b27',
+  'fontFamily':'ui-sans-serif, system-ui, sans-serif'}}}%%
+flowchart LR
+  subgraph FETCH["1 · Fetch"]
+    F["List events on every account<br/>in the window<br/><i>now − 24h → now + lookahead</i>"]
+    F --> S{"Split"}
+    S -->|"owner tag"| OB["owned blocks"]
+    S -->|"Free / declined"| SK["skipped"]
+    S -->|"otherwise"| RE["real events"]
+  end
+  subgraph PROP["2 · Propagate"]
+    P["For every real event,<br/>ensure a tagged block<br/>on every OTHER account"]
+  end
+  subgraph GC["3 · Collect"]
+    G["Remove owned blocks<br/>whose source is provably gone"]
+  end
+  FETCH --> PROP --> GC
 ```
 
-### Kubernetes
+**The ownership tag is the whole trick.** Every block carries a private
+`calendarBridgeOwner` property plus the identity of the source event it mirrors.
+From that:
 
-Mount `config.yaml` and `secrets/` from a `Secret` (not a `ConfigMap` —
-token files are live credentials) at `/app/config`, and run the image as a
-single-replica `Deployment`. The process handles SIGTERM by cancelling the
-in-flight sync pass and exiting promptly rather than being hard-killed after
-the grace period — but SIGTERM does cancel that pass, it does not let it
-finish first, so a rolling update or node drain can still interrupt a sync
-mid-flight (the next pass simply picks up where it left off). A `CronJob`
-running `sync-once` on a schedule also works if you'd rather not keep a pod
-always running.
+- **No sync loops.** An owned block is never treated as a real event, so it is
+  never propagated onward. With three accounts, an event on A produces exactly
+  one block on B and one on C — never a block of a block.
+- **No deleting real events.** Garbage collection only ever considers tagged
+  events, and the delete is conditional on the ETag read moments earlier.
+- **Safe partial failures.** If an account's fetch fails, it is excluded from the
+  *entire* pass — because "I did not see that event" and "that event was deleted"
+  must never be confused.
+
+An external organiser cannot forge the tag: Google's private extended properties
+are per-copy and per-calendar, so a crafted invitation cannot masquerade as one
+of our blocks.
+
+Full detail, including the client layering and every failure mode:
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+---
+
+## Screenshots
+
+<details>
+<summary><b>The web UI</b> — optional, loopback-only, off by default</summary>
+
+<br/>
+
+Status after a pass, with per-account health:
+
+![The status panel showing three accounts, all healthy, with counts of blocks created, updated and removed, and the time of the last successful pass](docs/assets/screenshots/sync-complete-dark.png)
+
+An expired token, with the command that fixes it:
+
+![The status panel showing one account failing, with a plain-language explanation that its token expired and the exact auth command to re-run](docs/assets/screenshots/error-expired-token-dark.png)
+
+Accounts:
+
+![The accounts section, listing three accounts with their name, credentials file, token file and calendar ID](docs/assets/screenshots/accounts-dark.png)
+
+Sync settings, and per-field validation:
+
+![The sync settings section with an invalid poll interval, showing an inline error against that field explaining the expected format](docs/assets/screenshots/validation-error-dark.png)
+
+Light theme, and 390px wide:
+
+![The same interface rendered in the light colour scheme](docs/assets/screenshots/dashboard-light.png)
+
+![The interface at mobile width, with the status tiles and account fields reflowed into a single readable column](docs/assets/screenshots/mobile-dark.png)
+
+Regenerate all of these with `make screenshots` — they are captured from the
+real binary against a synthetic fixture, never from real data.
+
+</details>
+
+<details>
+<summary><b>The CLI</b></summary>
+
+<br/>
+
+A sync pass, `-dry-run`, and `-json`:
+
+![Terminal recording showing a sync pass reporting an unauthorized account with the exact fix, then the dry-run and JSON output modes](docs/assets/demos/sync-once.gif)
+
+</details>
+
+---
+
+## Configuration
+
+The keys most people touch. Every key, with defaults and consequences, is in
+**[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
+
+| Key | Default | What it does |
+|---|---|---|
+| `accounts[]` | — | The accounts to sync between. **Minimum 2.** Each needs a name, a credentials file, a token file, and a calendar ID. |
+| `poll_interval` | `5m` | How often to sync. This is your propagation latency. Below `1m` you are mostly generating API load. |
+| `lookahead_days` | `30` | How far ahead to sync. The window is always `[now − 24h, now + lookahead_days]`. |
+| `block_title` | `Busy (calendar-bridge)` | The title of every block. **The only text that crosses accounts.** Changing it re-titles existing blocks. |
+| `web_ui.enabled` | `false` | The local config UI. Loopback-only, unconditionally. |
+| `metrics.enabled` | `false` | `/metrics`, `/healthz`, `/readyz`. |
+| `webhook.enabled` | `false` | Push notifications, for seconds-not-minutes latency. Needs a public HTTPS endpoint. |
+
+---
+
+## Deployment
+
+| Target | Effort | Always on? | Cost | Best for |
+|---|---|---|---|---|
+| [**Laptop**](docs/deployment/local.md) | Lowest | Only while awake | Free | Trying it out — and, for most people, permanently |
+| [**Docker**](docs/deployment/docker.md) | Low | While the host is up | Free | A NAS or home server you already run |
+| [**Raspberry Pi**](docs/deployment/home-server.md) | Low | Yes | ~2 W | The nicest always-on option if you own one |
+| [**Fly.io**](docs/deployment/fly.md) | Medium | Yes | ~$2/mo | No hardware, minimal ops |
+| [**Kubernetes**](docs/deployment/kubernetes.md) | Highest | Yes | Cluster cost | You already run a cluster |
+
+**Not sure? Start on your laptop.** It syncs whenever the machine is awake,
+which is usually whenever you are booking meetings. There is no state to
+migrate if you move it later — just a config file and a token per account.
+
+Ready-made units and manifests are in [`deploy/`](deploy/):
+systemd, launchd, docker-compose, and Kubernetes.
+
+---
+
+## Security and privacy
+
+**What leaves your infrastructure: nothing.** The only outbound connections are
+to `accounts.google.com` and `*.googleapis.com` — ordinary Calendar API calls.
+No analytics, no telemetry, no update check, no crash reporting, no third-party
+service of any kind.
+
+**What crosses between your accounts:** a start time, an end time, and the fixed
+`block_title` string. Nothing else. That is structural — the internal event model
+has no fields for a title, description, location, or attendees, so there is
+nowhere for content to flow.
+
+**Scope:** `calendar.events` only — the narrowest scope that permits creating and
+deleting events. Not the full `calendar` scope, which would also allow calendar
+creation, deletion, and ACL management.
+
+**Tokens** live in the `token_file` paths you configure, as plaintext JSON at
+`0600`, written atomically. calendar-bridge warns if they are group- or
+world-readable. Anyone who can read them has your calendars until you revoke the
+grant — encrypted-at-rest storage is a known gap.
+
+**The web UI** refuses to bind any non-loopback address, auth token or not, and
+has CSRF protection, a DNS-rebinding guard, constant-time token comparison, and
+a nonce-based CSP.
+
+**Releases** carry SBOMs, keyless cosign signatures, and build-provenance
+attestations. Every GitHub Action is pinned by SHA; base images by digest. CI
+runs `govulncheck`, CodeQL, Scorecard, and gitleaks.
+
+Full analysis, including **what the design does not defend against**:
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md). Report vulnerabilities per
+[SECURITY.md](SECURITY.md), not as a public issue.
+
+---
 
 ## Known limitations
 
-- **Polling by default; push is opt-in.** A change on one calendar can take up
-  to `poll_interval` to propagate. Google Calendar API push notifications
-  (webhooks) make this near-instant but add real infrastructure requirements
-  (a public HTTPS endpoint, channel renewal), so they're opt-in via
-  `webhook.enabled` — see [docs/webhooks.md](docs/webhooks.md). With push on,
-  polling still runs as a safety net.
-- **Transient API errors are retried.** Transient 429/5xx responses and network
-  timeouts are retried with exponential backoff + full jitter
-  (`internal/sync.NewRetryingClient`); non-transient errors (auth, not-found)
-  fail fast. A persistently failing account is still excluded from the pass and
-  retried next cycle.
-- **Refresh tokens aren't re-persisted.** Google rarely rotates the refresh
-  token for installed-app OAuth flows, so this is low-risk in practice, but
-  if it ever issues a new one, the on-disk token file goes stale until you
-  re-run `auth`.
-- **Secret file permissions are warned, not enforced on read.** calendar-bridge
-  writes token files as `0600` and warns at startup if a credentials or token
-  file is group/world-readable, but it does not refuse to run — keep
-  `secrets/` owner-only.
-- **No interface abstraction over the Calendar API client** — resolved: `internal/sync.CalendarClient` is a small interface (list/find/insert/update/delete) that both the real Google-backed client and test fakes implement, so `SyncOnce` is covered end-to-end by fakes, not just its pure helper functions. A provider-neutral `Provider` interface (`internal/sync/provider.go`) layers on top to unblock non-Google backends.
+Honest list. Several of these are on the [roadmap](#roadmap); none are secret.
+
+- **Tokens are stored in plaintext at rest.** `0600`, atomic writes, permission
+  warnings — but no OS keychain, no age encryption, no systemd credentials.
+  Anyone with your filesystem has your calendars.
+- **Polling by default.** Up to `poll_interval` of latency. Push is opt-in and
+  needs a public HTTPS endpoint.
+- **No cross-account deduplication.** If you are invited to the same meeting on
+  two configured accounts, each account's copy is a real event that produces a
+  block on the other — so you see the real event plus a redundant block on the
+  same slot. Deduplicating by `iCalUID` is on the roadmap.
+- **Blocks are not removed when you stop running it.** Garbage collection only
+  removes blocks it can see and match to a missing source; a process that is not
+  running collects nothing. There is no `uninstall` command yet — you search for
+  your `block_title` and delete by hand.
+- **Blocks that age out of the window are never collected.** Once both a block
+  and its source are older than the 24h look-back, neither is fetched, so the
+  block stays. Harmless — it is in the past — but "every block is eventually
+  collected" is not true.
+- **All-day Busy events blank the whole day elsewhere.** Most all-day events
+  default to Free and are skipped; one you explicitly mark Busy produces an
+  all-day block. Making this configurable is on the roadmap.
+- **Google only.** The provider seam exists and is on the production path, but
+  no second backend is implemented.
+- **Single user, single instance.** Running two instances is safe but wasteful.
+- **Permissions are warned, not enforced.** A world-readable token file logs a
+  warning; it does not stop the process.
+
+---
 
 ## Roadmap
 
-- [x] Retry with backoff on transient (429/5xx) API errors — implemented as a
-      provider-agnostic decorator (`internal/sync.NewRetryingClient`) with
-      exponential backoff + full jitter.
-- [~] Google Calendar API push notifications (webhooks) as an alternative
-      to polling — opt-in scaffolding landed (`internal/webhook`, gated behind
-      `webhook.enabled`); see [docs/webhooks.md](docs/webhooks.md). Polling
+- [x] Retry with backoff on transient (429/5xx) API errors — a
+      provider-agnostic decorator with exponential backoff and full jitter.
+- [x] Fakeable Calendar API client for full `SyncOnce` tests without live
+      credentials, plus an `httptest` double covering the real Google client.
+- [x] Structured metrics — `/metrics`, `/healthz`, `/readyz`, with alerting
+      rules in [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
+- [x] Skip events marked Free and invitations you declined.
+- [x] `-dry-run` and `-json`.
+- [~] Push notifications as an alternative to polling — landed and opt-in
+      (`webhook.enabled`); see [docs/webhooks.md](docs/webhooks.md). Polling
       remains the safety net.
-- [~] Provider abstraction to unblock non-Google backends (Outlook, iCloud) —
-      neutral `Provider` interface + model landed
-      (`internal/sync/provider.go`); Google adapter proves the seam. A concrete
-      Outlook/iCloud provider is the remaining work.
-- [x] Fakeable Calendar API client interface for full `SyncOnce` unit
-      tests without live credentials.
-- [ ] Structured metrics (sync duration, blocks created/deleted per pass)
-      for observability.
+- [~] Provider abstraction for non-Google backends — the neutral `Provider`
+      interface is on the production path and the Google adapter proves the
+      seam. A concrete Outlook or CalDAV provider is the remaining work.
+- [ ] Encrypted-at-rest token storage (OS keychain, age, systemd credentials).
+- [ ] `calendar-bridge uninstall` — remove every block it ever created.
+- [ ] Cross-account deduplication by `iCalUID`.
+- [ ] Configurable all-day event handling.
+- [ ] Homebrew tap.
 
-## Troubleshooting
-
-| Symptom | Likely cause |
-|---|---|
-| `account not yet authorized, run: calendar-bridge auth <account-name>` | Token file missing or unreadable — run the `auth` step for that account. |
-| `sync failed: fewer than 2 healthy accounts` | Two or more accounts failed to fetch this pass (expired tokens, revoked access, network). Check logs for the per-account errors, re-run `auth` for any account whose token expired. |
-| Busy blocks not appearing | Confirm `poll_interval` has actually elapsed since the source event was created, and that the source event falls within `lookahead_days`. |
-| Duplicate/orphaned "Busy" blocks after uninstalling | calendar-bridge only garbage-collects blocks it can currently see and match to a live source event. If you stop running it, or delete `config.yaml`, existing blocks are left in place — delete them manually or search each calendar for events titled with your `block_title`. |
+---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, PR guidelines, and
-where things live in the codebase. Issues and PRs welcome. CI runs
-`go build`, `go vet`, `go test -race`, `gofmt`, `golangci-lint`, and
-`govulncheck` on every PR; [CodeRabbit](https://coderabbit.ai) reviews
-automatically. See `.coderabbit.yaml` for the review guidance applied to
-this repo, especially the invariants called out for `internal/sync` and
-`internal/googleauth` — those two packages are the security- and
-correctness-critical ones. Please report security issues per
-[SECURITY.md](SECURITY.md), not as a public issue.
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup and PR guidelines.
+
+```bash
+git clone https://github.com/dcotelo/calendar-bridge.git
+cd calendar-bridge
+make ci        # build, vet, gofmt, race tests, coverage gate, lint, govulncheck
+```
+
+No external services are needed to build or test — the Calendar API is behind an
+interface, and the suite uses in-memory fakes plus an `httptest` double.
+
+| Path | What it is |
+|---|---|
+| `cmd/calendar-bridge` | CLI entry point |
+| `internal/sync` | The engine: fetch, propagate, garbage-collect |
+| `internal/googleauth` | OAuth flow and token persistence |
+| `internal/config` | Config loading, validation, saving |
+| `internal/webui` | The loopback configuration UI |
+| `internal/webhook` | Push receiver and watch-channel manager |
+| `internal/metrics` | Prometheus exposition and health probes |
+| `deploy/`, `docs/deployment/` | Units, manifests, and deployment guides |
+
+`internal/sync` and `internal/googleauth` are the correctness- and
+security-critical packages and get the most scrutiny — a mistake in either costs
+someone their calendar. The invariants they must uphold are written down in
+[`QUALITY_AUDIT.md`](QUALITY_AUDIT.md) and enforced in review via
+[`.coderabbit.yaml`](.coderabbit.yaml).
+
+---
 
 ## License
 
-MIT
+[MIT](LICENSE).
+
+<div align="center">
+
+<br/>
+
+Built by **Diego Cotelo**
+
+[![dcotelo.dev](https://img.shields.io/badge/dcotelo.dev-1a1b27?style=for-the-badge&logo=safari&logoColor=7aa2f7)](https://dcotelo.dev)
+[![GitHub](https://img.shields.io/badge/GitHub-1a1b27?style=for-the-badge&logo=github&logoColor=7aa2f7)](https://github.com/dcotelo)
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:7aa2f7,50:414868,100:1a1b27&height=120&section=footer" alt="" />
+
+</div>
