@@ -5,9 +5,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -33,10 +35,20 @@ import (
 // sync duration (seconds, even for many accounts/events) but still finite.
 const syncCycleTimeout = 5 * time.Minute
 
+// Exit codes. Documented so scripts and supervisors can branch on them.
+const (
+	exitOK          = 0
+	exitUsage       = 2 // bad flags, unknown command, missing required argument
+	exitConfig      = 3 // config file missing, unparseable, or invalid
+	exitAuth        = 4 // an account is unauthorized, or its token is unreadable
+	exitSyncFailure = 5 // the pass ran but at least one account or write failed
+	exitRuntime     = 6 // could not start (port in use, listener refused, etc.)
+)
+
 func main() {
 	if len(os.Args) < 2 {
-		usage()
-		os.Exit(1)
+		usage(os.Stderr)
+		os.Exit(exitUsage)
 	}
 
 	switch os.Args[1] {
@@ -48,31 +60,59 @@ func main() {
 		runSyncOnce(os.Args[2:])
 	case "ui":
 		runUI(os.Args[2:])
+	case "version", "-version", "--version":
+		printVersion(os.Stdout)
 	case "-h", "--help", "help":
-		usage()
+		// Asked-for help is output, not an error: stdout, exit 0, so
+		// `calendar-bridge --help | less` works.
+		usage(os.Stdout)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
-		usage()
-		os.Exit(1)
+		usage(os.Stderr)
+		os.Exit(exitUsage)
 	}
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `calendar-bridge - self-hosted busy-time sync across Google Calendar accounts
+func usage(w io.Writer) {
+	fmt.Fprint(w, `calendar-bridge - self-hosted busy-time sync across Google Calendar accounts
 
 Usage:
   calendar-bridge auth -config config.yaml -account <name>
       Run the interactive OAuth2 flow for one account and cache its token.
+      Do this once per account, on a machine with a browser, before `+"`run`"+`.
 
-  calendar-bridge sync-once -config config.yaml
-      Run a single sync pass and exit. Useful for cron/testing.
+  calendar-bridge sync-once [-config config.yaml] [-dry-run] [-json]
+      Run a single sync pass and exit. Useful for cron, and for checking a
+      config before leaving it running.
 
-  calendar-bridge run -config config.yaml
+  calendar-bridge run [-config config.yaml] [-dry-run]
       Run the sync loop continuously, polling at the configured interval.
+      Exits cleanly on SIGINT/SIGTERM.
 
-  calendar-bridge ui -config config.yaml
-      Serve the local configuration web UI (loopback-only by default; set
-      web_ui.auth_token to expose it with authentication).
+  calendar-bridge ui [-config config.yaml]
+      Serve the local configuration web UI. Loopback-only: a non-loopback
+      listen_addr is refused. Requires web_ui.enabled: true in the config.
+
+  calendar-bridge version
+      Print version, commit, build date, Go version and platform.
+
+Flags:
+  -config <path>   Path to the config file (default "config.yaml").
+  -dry-run         Report the blocks that would be created, moved and removed
+                   without writing anything. Reads still hit the Calendar API,
+                   so working credentials are still required.
+  -json            Emit the pass result as a single JSON object on stdout
+                   (sync-once only). Logs continue to go to stderr.
+
+Exit codes:
+  0  success
+  2  usage error (bad flags, unknown command, missing argument)
+  3  configuration error
+  4  an account needs authorization, or its token file is unreadable
+  5  the sync pass ran but reported failures
+  6  could not start (address in use, listener refused)
+
+Docs: https://github.com/dcotelo/calendar-bridge
 `)
 }
 
@@ -85,7 +125,7 @@ func loadConfig(fs *flag.FlagSet, args []string) *config.Config {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "loading config: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitConfig)
 	}
 	return cfg
 }
@@ -97,14 +137,14 @@ func runAuth(args []string) {
 	_ = fs.Parse(args) // ExitOnError FlagSet: Parse exits on error, never returns one here
 
 	if *accountName == "" {
-		fmt.Fprintln(os.Stderr, "auth: -account is required")
-		os.Exit(1)
+		fmt.Fprintln(os.Stderr, "auth: -account is required\n\nExample:\n  calendar-bridge auth -config config.yaml -account personal")
+		os.Exit(exitUsage)
 	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "loading config: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitConfig)
 	}
 
 	var target *config.Account
@@ -115,14 +155,19 @@ func runAuth(args []string) {
 		}
 	}
 	if target == nil {
-		fmt.Fprintf(os.Stderr, "auth: no account named %q in config\n", *accountName)
-		os.Exit(1)
+		names := make([]string, 0, len(cfg.Accounts))
+		for _, a := range cfg.Accounts {
+			names = append(names, a.Name)
+		}
+		fmt.Fprintf(os.Stderr, "auth: no account named %q in config; configured accounts are: %s\n",
+			*accountName, strings.Join(names, ", "))
+		os.Exit(exitUsage)
 	}
 
 	ctx := context.Background()
 	if err := googleauth.Authorize(ctx, target.CredentialsFile, target.TokenFile); err != nil {
 		fmt.Fprintf(os.Stderr, "authorizing %s: %v\n", *accountName, err)
-		os.Exit(1)
+		os.Exit(exitAuth)
 	}
 }
 
@@ -172,58 +217,113 @@ func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 // reportSetupError prints a setup failure with an actionable next step for the
 // two causes an operator can actually fix themselves, rather than only the
 // wrapped error text.
-func reportSetupError(err error) {
+func reportSetupError(err error) int {
 	fmt.Fprintf(os.Stderr, "setting up: %v\n", err)
 	switch {
 	case errors.Is(err, googleauth.ErrNeedsAuth):
 		fmt.Fprintln(os.Stderr, "\nRun the authorization flow for that account:\n  calendar-bridge auth -config <config.yaml> -account <name>")
+		return exitAuth
 	case errors.Is(err, googleauth.ErrTokenInaccessible):
 		fmt.Fprintln(os.Stderr, "\nThe token file exists but could not be opened — check its ownership and\n"+
 			"permissions, and those of the directory holding it. It must be readable AND\n"+
 			"writable by the user running calendar-bridge (refreshed tokens are written back).")
+		return exitAuth
 	case errors.Is(err, googleauth.ErrTokenUnreadable):
 		fmt.Fprintln(os.Stderr, "\nThe token file is present but corrupt (an interrupted write, or hand-edited).\n"+
 			"Delete it and re-run the authorization flow:\n  calendar-bridge auth -config <config.yaml> -account <name>")
+		return exitAuth
 	}
+	return exitRuntime
+}
+
+// passReport is the -json shape of a single sync pass. Counts, timings and
+// account names only — no event data.
+type passReport struct {
+	Version    string   `json:"version"`
+	DryRun     bool     `json:"dry_run"`
+	OK         bool     `json:"ok"`
+	Error      string   `json:"error,omitempty"`
+	StartedAt  string   `json:"started_at"`
+	DurationMS int64    `json:"duration_ms"`
+	Created    int      `json:"created"`
+	Updated    int      `json:"updated"`
+	Deleted    int      `json:"deleted"`
+	Skipped    int      `json:"skipped"`
+	Healthy    []string `json:"healthy_accounts"`
+	Failed     []string `json:"failed_accounts,omitempty"`
 }
 
 func runSyncOnce(args []string) {
 	fs := flag.NewFlagSet("sync-once", flag.ExitOnError)
+	dryRun := fs.Bool("dry-run", false, "report what would change without writing to any calendar")
+	asJSON := fs.Bool("json", false, "emit the pass result as JSON on stdout")
 	cfg := loadConfig(fs, args)
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	// With -json, stdout carries exactly one JSON object; logs go to stderr so
+	// the output stays machine-readable.
+	logDest := io.Writer(os.Stdout)
+	if *asJSON {
+		logDest = os.Stderr
+	}
+	logger := slog.New(slog.NewTextHandler(logDest, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	engine, _, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
-		reportSetupError(err)
-		os.Exit(1)
+		os.Exit(reportSetupError(err))
 	}
+	engine.DryRun = *dryRun
 
 	cycleCtx, cancel := context.WithTimeout(ctx, syncCycleTimeout)
 	defer cancel()
-	res, err := engine.SyncOnce(cycleCtx)
-	if err != nil {
-		// A SIGINT/SIGTERM during this pass cancels ctx (and therefore
-		// cycleCtx), which SyncOnce surfaces as an error. That's an
-		// intentional, expected shutdown, not a failure — treat it the
-		// same way the run loop does and exit 0. Genuine timeouts and API
-		// errors still exit non-zero.
-		if ctx.Err() != nil {
-			logger.Info("received shutdown signal during sync, exiting")
-			return
+	res, syncErr := engine.SyncOnce(cycleCtx)
+
+	// A SIGINT/SIGTERM during this pass cancels ctx (and therefore cycleCtx),
+	// which SyncOnce surfaces as an error. That's an intentional shutdown, not
+	// a failure — exit 0. Genuine timeouts and API errors still exit non-zero.
+	interrupted := syncErr != nil && ctx.Err() != nil
+
+	if *asJSON {
+		rep := passReport{
+			Version:    versionString(),
+			DryRun:     *dryRun,
+			OK:         syncErr == nil,
+			StartedAt:  res.Started.UTC().Format(time.RFC3339),
+			DurationMS: res.Duration().Milliseconds(),
+			Created:    res.Created, Updated: res.Updated,
+			Deleted: res.Deleted, Skipped: res.Skipped,
+			Healthy: res.HealthyAccounts, Failed: res.FailedAccounts,
 		}
-		fmt.Fprintf(os.Stderr, "sync failed: %v\n", err)
-		os.Exit(1)
+		if syncErr != nil {
+			rep.Error = syncErr.Error()
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if encErr := enc.Encode(rep); encErr != nil {
+			fmt.Fprintf(os.Stderr, "writing JSON report: %v\n", encErr)
+			os.Exit(exitRuntime)
+		}
 	}
-	logger.Info("sync pass complete",
-		"created", res.Created, "updated", res.Updated, "deleted", res.Deleted,
-		"skipped", res.Skipped, "duration", res.Duration())
+
+	switch {
+	case interrupted:
+		logger.Info("received shutdown signal during sync, exiting")
+	case syncErr != nil:
+		if !*asJSON {
+			fmt.Fprintf(os.Stderr, "sync failed: %v\n", syncErr)
+		}
+		os.Exit(exitSyncFailure)
+	case !*asJSON:
+		logger.Info("sync pass complete", "dry_run", *dryRun,
+			"created", res.Created, "updated", res.Updated, "deleted", res.Deleted,
+			"skipped", res.Skipped, "duration", res.Duration())
+	}
 }
 
 func runSync(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	dryRun := fs.Bool("dry-run", false, "report what would change without writing to any calendar")
 	cfg := loadConfig(fs, args)
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -234,14 +334,17 @@ func runSync(args []string) {
 
 	engine, services, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
-		reportSetupError(err)
-		os.Exit(1)
+		os.Exit(reportSetupError(err))
+	}
+	engine.DryRun = *dryRun
+	if *dryRun {
+		logger.Warn("dry-run mode: no calendar will be written to")
 	}
 
 	interval, err := time.ParseDuration(cfg.PollInterval)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid poll_interval %q: %v\n", cfg.PollInterval, err)
-		os.Exit(1)
+		os.Exit(exitConfig)
 	}
 
 	// Optional push path: when webhook is enabled, start the receiver and the
@@ -254,7 +357,7 @@ func runSync(args []string) {
 		trigger, wait, err := startWebhook(ctx, cfg, services, logger)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "starting webhook: %v\n", err)
-			os.Exit(1)
+			os.Exit(exitRuntime)
 		}
 		pushTrigger = trigger
 		waitWebhook = wait
@@ -395,11 +498,11 @@ func runUI(args []string) {
 		// (shared logs) and emit a stable message. The operator knows the path
 		// they passed via -config.
 		fmt.Fprintln(os.Stderr, "ui: failed to load config (check -config path and file contents)")
-		os.Exit(1)
+		os.Exit(exitConfig)
 	}
 	if !cfg.WebUI.Enabled {
 		fmt.Fprintln(os.Stderr, "ui: web_ui.enabled is false in config; set it to true to run the UI")
-		os.Exit(1)
+		os.Exit(exitConfig)
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -455,7 +558,7 @@ func runUI(args []string) {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ui: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitConfig)
 	}
 
 	httpSrv := &http.Server{
@@ -487,6 +590,6 @@ func runUI(args []string) {
 	logger.Info("serving configuration UI", "addr", cfg.WebUI.ListenAddr, "auth", authNote)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(os.Stderr, "ui: server error: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitRuntime)
 	}
 }

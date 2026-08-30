@@ -747,6 +747,81 @@ type testError struct{ msg string }
 
 func (e *testError) Error() string { return e.msg }
 
+// ---- Dry run ----
+
+// A dry run must report exactly what a real pass would do, and change nothing.
+func TestSyncOnce_DryRunReportsWithoutWriting(t *testing.T) {
+	h := newHarness(t, "personal", "work-acme")
+	h.fakes["personal"].seed("new-1", at("new-1", 24*time.Hour, time.Hour))
+	h.fakes["personal"].seed("moved-1", at("moved-1", 48*time.Hour, time.Hour))
+
+	// Give work-acme a block that is already correct for moved-1 but at the
+	// wrong time (so a real pass would update it), plus an orphan block whose
+	// source no longer exists (so a real pass would delete it).
+	h.fakes["work-acme"].seed("blk-moved", ownedBlockFor("personal", "moved-1", baseTime.Add(96*time.Hour)))
+	h.fakes["work-acme"].seed("blk-orphan", ownedBlockFor("personal", "gone-1", baseTime.Add(72*time.Hour)))
+
+	h.engine.DryRun = true
+	res := h.run(t)
+
+	if res.Created != 1 || res.Updated != 1 || res.Deleted != 1 {
+		t.Errorf("dry run reported created=%d updated=%d deleted=%d, want 1/1/1",
+			res.Created, res.Updated, res.Deleted)
+	}
+	for name, f := range h.fakes {
+		if got := f.writes(); got != 0 {
+			t.Errorf("%s: dry run made %d write calls, want 0", name, got)
+		}
+	}
+	// The calendar is untouched: still exactly the two seeded blocks, and the
+	// misplaced one is still misplaced.
+	if got := len(h.fakes["work-acme"].ownedBlocks()); got != 2 {
+		t.Errorf("work-acme has %d blocks after a dry run, want the original 2", got)
+	}
+	if got := h.fakes["work-acme"].byID("blk-moved").Start.DateTime; got != baseTime.Add(96*time.Hour).Format(time.RFC3339) {
+		t.Errorf("dry run moved a block: start = %q", got)
+	}
+	if h.fakes["work-acme"].byID("blk-orphan") == nil {
+		t.Error("dry run deleted the orphan block")
+	}
+}
+
+// A dry run followed by a real pass must produce the counts the dry run
+// promised — otherwise -dry-run is not a preview of anything.
+func TestSyncOnce_DryRunMatchesTheRealPass(t *testing.T) {
+	build := func(dry bool) Result {
+		h := newHarness(t, "personal", "work-acme", "work-other")
+		h.fakes["personal"].seed("evt-1", at("evt-1", 24*time.Hour, time.Hour))
+		h.fakes["work-acme"].seed("evt-2", at("evt-2", 48*time.Hour, time.Hour))
+		h.fakes["work-other"].seed("blk-orphan", ownedBlockFor("personal", "gone-1", baseTime.Add(72*time.Hour)))
+		h.engine.DryRun = dry
+		return h.run(t)
+	}
+
+	dry, real := build(true), build(false)
+	if dry.Created != real.Created || dry.Updated != real.Updated || dry.Deleted != real.Deleted {
+		t.Errorf("dry run reported %d/%d/%d (created/updated/deleted) but the real pass did %d/%d/%d",
+			dry.Created, dry.Updated, dry.Deleted, real.Created, real.Updated, real.Deleted)
+	}
+}
+
+// ownedBlockFor builds a calendar-bridge-owned block mirroring a given source.
+func ownedBlockFor(srcAccount, srcEventID string, start time.Time) *calendar.Event {
+	return &calendar.Event{
+		Summary:      "Busy (calendar-bridge)",
+		Transparency: "opaque",
+		Visibility:   "private",
+		Start:        &calendar.EventDateTime{DateTime: start.Format(time.RFC3339), TimeZone: "UTC"},
+		End:          &calendar.EventDateTime{DateTime: start.Add(time.Hour).Format(time.RFC3339), TimeZone: "UTC"},
+		ExtendedProperties: &calendar.EventExtendedProperties{Private: map[string]string{
+			ownerKey:          ownerValue,
+			sourceAccountKey:  srcAccount,
+			sourceCalendarKey: "primary",
+			sourceEventKey:    srcEventID,
+		}},
+	}
+}
+
 // ---- classification edges ----
 
 // A source event that is skipped (Free/declined) on an account that then FAILS

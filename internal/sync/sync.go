@@ -50,6 +50,12 @@ type Engine struct {
 	// DST and clock-skew behaviour are assertable instead of depending on
 	// when the suite happens to run.
 	Now func() time.Time
+
+	// DryRun makes the pass read-only: it fetches, works out exactly which
+	// blocks it would create, move and remove, counts them in the Result and
+	// logs each one, but issues no write to any calendar. Reads still happen,
+	// so a dry run needs working credentials and does hit the API.
+	DryRun bool
 }
 
 func (e *Engine) log() *slog.Logger {
@@ -174,7 +180,8 @@ func (e *Engine) SyncOnce(ctx context.Context) (res Result, err error) {
 	timeMin := now.Add(-lookBackBuffer)
 	timeMax := now.Add(time.Duration(e.LookaheadDays) * 24 * time.Hour)
 
-	log.Info("sync.pass.start", "accounts", len(e.Accounts), "window_start", timeMin, "window_end", timeMax)
+	log.Info("sync.pass.start", "accounts", len(e.Accounts),
+		"window_start", timeMin, "window_end", timeMax, "dry_run", e.DryRun)
 
 	// 1. Pull real events (and existing owned blocks, for GC) from every account.
 	type accountEvents struct {
@@ -252,10 +259,10 @@ func (e *Engine) SyncOnce(ctx context.Context) (res Result, err error) {
 				switch outcome {
 				case outcomeCreated:
 					res.Created++
-					log.Info("sync.block.created", "account", dst.Name, "source", indexKey(src.Name, ev.Id))
+					log.Info("sync.block.created", "account", dst.Name, "source", indexKey(src.Name, ev.Id), "dry_run", e.DryRun)
 				case outcomeUpdated:
 					res.Updated++
-					log.Info("sync.block.updated", "account", dst.Name, "source", indexKey(src.Name, ev.Id))
+					log.Info("sync.block.updated", "account", dst.Name, "source", indexKey(src.Name, ev.Id), "dry_run", e.DryRun)
 				}
 			}
 		}
@@ -287,7 +294,11 @@ func (e *Engine) SyncOnce(ctx context.Context) (res Result, err error) {
 				continue
 			}
 			log.Info("sync.block.deleted", "account", dst.Name, "block_id", block.Id,
-				"source", indexKey(srcAccount, srcEventID))
+				"source", indexKey(srcAccount, srcEventID), "dry_run", e.DryRun)
+			if e.DryRun {
+				res.Deleted++
+				continue
+			}
 			// Conditional on the ETag we listed: if the block changed since
 			// the fetch, the delete fails rather than removing a now-altered
 			// event. block.Etag may be empty (e.g. test fakes) → unconditional.
@@ -300,7 +311,7 @@ func (e *Engine) SyncOnce(ctx context.Context) (res Result, err error) {
 	}
 
 	err = errors.Join(append(fetchErrs, syncErrs...)...)
-	log.Info("sync.pass.complete",
+	log.Info("sync.pass.complete", "dry_run", e.DryRun,
 		"created", res.Created, "updated", res.Updated, "deleted", res.Deleted,
 		"skipped", res.Skipped, "healthy_accounts", len(res.HealthyAccounts),
 		"failed_accounts", len(res.FailedAccounts), "ok", err == nil)
@@ -351,6 +362,9 @@ func (e *Engine) ensureBlock(ctx context.Context, src Account, srcEvent *calenda
 		if timesMatch && titleMatches {
 			return outcomeUnchanged, nil
 		}
+		if e.DryRun {
+			return outcomeUpdated, nil
+		}
 		// Build the payload as a COPY rather than mutating the block we hold.
 		// Google's update is a full replace, so it must carry every field —
 		// hence the struct copy — but mutating in place would leave the block
@@ -392,6 +406,9 @@ func (e *Engine) ensureBlock(ctx context.Context, src Account, srcEvent *calenda
 				sourceEventKey:    srcEvent.Id,
 			},
 		},
+	}
+	if e.DryRun {
+		return outcomeCreated, nil
 	}
 	created, err := dst.Client.InsertEvent(ctx, dst.CalendarID, block)
 	if err != nil {
