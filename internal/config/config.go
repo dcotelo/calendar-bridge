@@ -4,8 +4,10 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -15,42 +17,46 @@ import (
 type Account struct {
 	// Name is a short human-readable identifier for logs (e.g. "personal",
 	// "work-acme"). Not the email address.
-	Name string `yaml:"name"`
+	Name string `yaml:"name" json:"name"`
 
 	// CredentialsFile is the path to the OAuth2 client credentials JSON
 	// downloaded from Google Cloud Console (Desktop app type).
-	CredentialsFile string `yaml:"credentials_file"`
+	CredentialsFile string `yaml:"credentials_file" json:"credentials_file"`
 
 	// TokenFile is where the OAuth2 token (obtained via the auth flow) is
 	// stored/read for this account. One token file per account.
-	TokenFile string `yaml:"token_file"`
+	TokenFile string `yaml:"token_file" json:"token_file"`
 
 	// CalendarID is the calendar to read/write on this account. Use
 	// "primary" for the account's default calendar.
-	CalendarID string `yaml:"calendar_id"`
+	CalendarID string `yaml:"calendar_id" json:"calendar_id"`
 }
 
 // Config is the top-level calendar-bridge configuration.
 type Config struct {
 	// Accounts to sync busy time across. Minimum 2.
-	Accounts []Account `yaml:"accounts"`
+	Accounts []Account `yaml:"accounts" json:"accounts"`
 
 	// PollInterval controls how often each calendar is polled for changes,
 	// expressed as a Go duration string (e.g. "5m").
-	PollInterval string `yaml:"poll_interval"`
+	PollInterval string `yaml:"poll_interval" json:"poll_interval"`
 
 	// LookaheadDays controls how many days into the future events are
 	// synced.
-	LookaheadDays int `yaml:"lookahead_days"`
+	LookaheadDays int `yaml:"lookahead_days" json:"lookahead_days"`
 
 	// BlockTitle is the title used for synced busy blocks.
-	BlockTitle string `yaml:"block_title"`
+	BlockTitle string `yaml:"block_title" json:"block_title"`
 
 	// Webhook, when enabled, opts into Google Calendar push notifications
 	// (events.watch) as a near-real-time alternative/supplement to polling.
 	// When disabled (the default), calendar-bridge behaves exactly as before:
 	// pure polling at PollInterval. See internal/webhook for the design.
-	Webhook Webhook `yaml:"webhook"`
+	Webhook Webhook `yaml:"webhook" json:"webhook"`
+
+	// WebUI configures the optional local configuration web UI (see the `ui`
+	// subcommand and internal/webui). Disabled unless explicitly enabled.
+	WebUI WebUI `yaml:"web_ui" json:"web_ui"`
 }
 
 // Webhook configures Google Calendar push notifications. Push requires a
@@ -60,34 +66,65 @@ type Config struct {
 type Webhook struct {
 	// Enabled turns push notifications on. When false, all other fields are
 	// ignored and calendar-bridge polls only.
-	Enabled bool `yaml:"enabled"`
+	Enabled bool `yaml:"enabled" json:"enabled"`
 
 	// PublicURL is the externally reachable HTTPS base URL Google will POST
 	// notifications to (e.g. "https://cb.example.com"). The receiver listens
 	// at PublicURL + "/webhook".
-	PublicURL string `yaml:"public_url"`
+	PublicURL string `yaml:"public_url" json:"public_url"`
 
 	// ListenAddr is the local address the receiver binds (e.g. "127.0.0.1:8080").
 	// Typically behind a TLS-terminating reverse proxy that forwards to it —
 	// prefer a loopback address so the plaintext receiver isn't reachable
 	// directly, bypassing the proxy's TLS; bind wider only when the proxy
 	// runs elsewhere and network-level isolation covers the port instead.
-	ListenAddr string `yaml:"listen_addr"`
+	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
 
 	// VerificationToken is an opaque secret echoed back by Google in the
 	// X-Goog-Channel-Token header of every notification, letting the receiver
 	// reject forged requests. Generate a long random string and keep it
-	// secret (it is a credential — see SECURITY.md).
-	VerificationToken string `yaml:"verification_token"`
+	// secret (it is a credential — see SECURITY.md). Like WebUI.AuthToken,
+	// the webui package redacts this on GET /api/config and preserves the
+	// existing value when a PUT sends it empty.
+	VerificationToken string `yaml:"verification_token" json:"verification_token,omitempty"`
 
 	// ChannelTTL is how long each watch channel lives before renewal, as a Go
 	// duration (e.g. "24h"). Google caps this; calendar-bridge renews ahead
 	// of expiry. Empty means use the provider/library default.
-	ChannelTTL string `yaml:"channel_ttl"`
+	ChannelTTL string `yaml:"channel_ttl" json:"channel_ttl"`
 
 	// DebounceInterval coalesces a burst of notifications into a single sync
 	// (e.g. "5s"), so a flurry of edits triggers one reconcile, not dozens.
-	DebounceInterval string `yaml:"debounce_interval"`
+	DebounceInterval string `yaml:"debounce_interval" json:"debounce_interval"`
+}
+
+// WebUI configures the local configuration management web UI.
+//
+// Security model: the UI can read and write config.yaml, so it is treated as
+// a privileged local admin surface. It binds loopback (127.0.0.1) only and
+// REFUSES to bind any non-loopback address, regardless of AuthToken — it
+// serves plaintext HTTP, so a direct non-loopback bind would send the
+// Authorization header (and the config) in the clear. Reach it remotely via
+// an SSH tunnel or a TLS-terminating reverse proxy pointed at the loopback
+// port (see docs/web-ui.md). It never reads or serves credential/token file
+// *contents* — those stay on disk; the UI only edits the file paths, exactly
+// like editing config.yaml by hand.
+type WebUI struct {
+	// Enabled turns the `ui` server on. When false the subcommand refuses to
+	// start.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// ListenAddr is the address the UI binds. Defaults to "127.0.0.1:8090".
+	// Must be a loopback address — a non-loopback host (e.g. "0.0.0.0:8090")
+	// is refused unconditionally, AuthToken notwithstanding.
+	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
+
+	// AuthToken, when set, is required as a Bearer token on every /api/*
+	// request (compared in constant time). Set it when reaching the UI
+	// through a reverse proxy (so the proxy's callers must authenticate);
+	// it does not by itself permit a non-loopback direct bind. Treat it as
+	// a credential.
+	AuthToken string `yaml:"auth_token" json:"auth_token,omitempty"`
 }
 
 // Load reads and parses a YAML config file at path.
@@ -133,6 +170,80 @@ func (c *Config) applyDefaults() {
 			c.Webhook.DebounceInterval = "5s"
 		}
 	}
+	if c.WebUI.ListenAddr == "" {
+		c.WebUI.ListenAddr = "127.0.0.1:8090"
+	}
+}
+
+// Save validates the config and writes it back to path as YAML, atomically
+// and with owner-only (0600) permissions.
+//
+// It writes to a temporary file in the same directory and renames it into
+// place, so a crash mid-write can never leave a truncated or half-written
+// config. It validates BEFORE touching disk, so an invalid config (e.g.
+// fewer than 2 accounts, missing required fields) is rejected without
+// clobbering the existing file. The file is written 0600 because it may
+// contain the WebUI auth token and always references credential/token paths.
+func (c *Config) Save(path string) error {
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("refusing to save invalid config: %w", err)
+	}
+
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".config-*.yaml.tmp")
+	if err != nil {
+		return fmt.Errorf("creating temp config file in %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	// Best-effort cleanup if we bail before the rename succeeds.
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp config file to 0600: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing temp config file: %w", err)
+	}
+	// fsync the temp file before the rename so the new contents are durably on
+	// disk first; otherwise a crash right after rename could leave the config
+	// entry pointing at a file whose data never reached the platter.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("syncing temp config file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp config file: %w", err)
+	}
+
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("atomically replacing config file %s: %w", path, err)
+	}
+	return nil
+}
+
+// IsLoopbackAddr reports whether host:port addr binds only the loopback
+// interface. Used to decide whether the WebUI may start without an auth
+// token. An empty host (":8090") binds all interfaces and is NOT loopback.
+func IsLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return false // ":port" binds all interfaces
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Validate checks the config for obvious mistakes before the sync engine
@@ -211,6 +322,26 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("webhook.channel_ttl must be positive, got %q", c.Webhook.ChannelTTL)
 			}
 		}
+	}
+
+	// Validate sync tuning so an invalid value written through any path
+	// (including the web UI's Save) is rejected up front rather than crashing
+	// `run` at startup. Empty poll_interval is allowed here — applyDefaults
+	// fills it after Load.
+	if c.PollInterval != "" {
+		d, err := time.ParseDuration(c.PollInterval)
+		if err != nil {
+			return fmt.Errorf("poll_interval %q is not a valid duration: %w", c.PollInterval, err)
+		}
+		// time.ParseDuration accepts "0s" and negatives; runSync passes this to
+		// time.After, which fires immediately for non-positive values and would
+		// spin a tight sync loop hammering the Calendar API.
+		if d <= 0 {
+			return fmt.Errorf("poll_interval must be positive, got %q", c.PollInterval)
+		}
+	}
+	if c.LookaheadDays < 0 {
+		return fmt.Errorf("lookahead_days must not be negative, got %d", c.LookaheadDays)
 	}
 	return nil
 }
