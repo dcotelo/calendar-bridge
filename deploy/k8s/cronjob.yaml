@@ -1,0 +1,92 @@
+# CronJob variant: run one sync pass on a schedule instead of keeping a pod up.
+#
+# NOT part of the default kustomization — it is an ALTERNATIVE to
+# deployment.yaml, not an addition. Running both would double your API usage.
+#
+#   kubectl apply -k deploy/k8s          # the Deployment
+#   kubectl apply -f deploy/k8s/cronjob.yaml -n calendar-bridge   # or this
+#
+# Worth it when you would rather not keep a pod resident. The costs: no metrics
+# endpoint to scrape between runs, no push-notification support, and the
+# schedule granularity is a minute rather than a duration.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: calendar-bridge-sync
+  labels:
+    app.kubernetes.io/name: calendar-bridge
+spec:
+  schedule: "*/5 * * * *"
+  # A pass takes seconds. If one is somehow still running, skip rather than
+  # stack: concurrent passes would race on the same calendars.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      # Bound a wedged pass; the binary also self-limits at 5 minutes.
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: calendar-bridge
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: stage-config
+              image: busybox:1.37.0
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  cp /secret/* /app/config/
+                  chmod 600 /app/config/*
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 65532
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: {cpu: 10m, memory: 16Mi}
+                limits: {memory: 32Mi}
+              volumeMounts:
+                - {name: secret, mountPath: /secret, readOnly: true}
+                - {name: config, mountPath: /app/config}
+          containers:
+            - name: sync
+              image: ghcr.io/dcotelo/calendar-bridge:latest
+              args: ["sync-once", "-config", "/app/config/config.yaml"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 65532
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits: {memory: 128Mi}
+              volumeMounts:
+                - {name: config, mountPath: /app/config}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: config
+              emptyDir: {sizeLimit: 4Mi}
+            - name: secret
+              secret:
+                secretName: calendar-bridge-config
+                defaultMode: 0400
+            - name: tmp
+              emptyDir: {sizeLimit: 16Mi}
