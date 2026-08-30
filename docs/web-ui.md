@@ -31,8 +31,16 @@ The UI can rewrite `config.yaml`, so it is treated as privileged:
 - **Safe writes.** Saving goes through the same validation the daemon uses and
   is written atomically at `0600`. An invalid edit (e.g. fewer than 2 accounts)
   is rejected and the existing file is left untouched.
-- **Hardened responses.** The page is fully self-contained (no external assets)
-  and served with a strict `Content-Security-Policy` and `X-Content-Type-Options: nosniff`.
+- **Hardened responses.** The page is fully self-contained (no external assets,
+  no CDN) and served with a strict `Content-Security-Policy` built on a
+  **per-response nonce** — no `unsafe-inline` — plus `default-src 'none'`,
+  `base-uri 'none'`, `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
+  `Cache-Control: no-store` on every response.
+- **CSRF and DNS-rebinding guards.** Every `/api/*` request is checked against
+  `Sec-Fetch-Site` and `Origin`; in the default no-token mode, a request whose
+  `Host` is not a loopback authority is rejected, so a rebound public hostname
+  cannot drive the API from your browser.
 
 Even with auth, exposing an admin UI to a network is inherently riskier than
 keeping it on localhost. The recommended pattern is to leave it loopback-only
@@ -61,22 +69,22 @@ calendar-bridge ui -config config.yaml
 
 Then open `http://127.0.0.1:8090`.
 
-If you set an `auth_token`, the browser must present it. The bundled page reads
-the token from the URL fragment (which browsers never send to the server and
-which stays out of server logs):
+If you set an `auth_token`, the browser must present it. Paste it into the
+**Access** field on the page: it is kept in that browser's `localStorage` and
+sent as `Authorization: Bearer <token>` on every API call. It is deliberately
+never put in the URL, so it cannot land in server logs or browser history.
 
-```text
-http://your-host:8090/#token=YOUR_TOKEN
-```
+A legacy `#token=...` fragment is migrated into storage once and then stripped
+from the address bar, so an old bookmark still works.
 
 ## Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/` | The single-page UI (embedded in the binary) |
-| GET | `/api/config` | Current config as JSON (`web_ui.auth_token` redacted) |
+| GET | `/api/config` | Current config as JSON (`web_ui.auth_token` and `webhook.verification_token` both redacted) |
 | PUT | `/api/config` | Validate + atomically save a new config |
-| GET | `/api/status` | Runtime snapshot (account count, last sync) |
+| GET | `/api/status` | Runtime snapshot: account count, per-account health, last successful sync, last attempt, pass duration, and blocks created/updated/deleted/skipped |
 | POST | `/api/sync` | Trigger a one-off sync pass |
 
 On `PUT`, sending an empty `web_ui.auth_token` means "keep the existing token"
@@ -85,6 +93,13 @@ On `PUT`, sending an empty `web_ui.auth_token` means "keep the existing token"
 ## Limitations
 
 - The UI intentionally does **not** manage OAuth tokens or run the auth flow —
-  use `calendar-bridge auth <account>` for that.
-- Status is a minimal snapshot; richer metrics are tracked separately in the
-  roadmap.
+  use `calendar-bridge auth -account <name>` for that. The interactive flow
+  needs a browser and a terminal, and keeping OAuth secrets out of the browser
+  is the point.
+- Saving cannot turn the UI off, change its listen address, or clear its auth
+  token: an omitted value means "unchanged", so a save can never lock you out
+  of the UI. Edit `config.yaml` to change those.
+- The status snapshot is per-process and resets on restart. For history, use
+  the [metrics endpoint](OBSERVABILITY.md).
+- On a shared multi-user host, "loopback only" does not mean "only you". Set
+  `auth_token` there.

@@ -4,7 +4,12 @@ Audited at commit `85c4afc` (branch `main`), 2026-08-30.
 Companion inventory: [`docs/INVENTORY.md`](docs/INVENTORY.md).
 
 Every finding below was read out of the source. Line references are to the
-audited commit.
+**audited** commit and will not match the current tree where a fix has landed.
+
+> **Status: most of this has been fixed.** See
+> [What changed](#what-changed-after-the-audit) at the end, which records the
+> disposition of every finding and the three additional bugs that only surfaced
+> once the fixes were implemented and tested.
 
 ---
 
@@ -570,3 +575,166 @@ mechanical but touches the release path, best done as its own PR with a test
 tag), plus the Phase-8 backlog: docs site, Homebrew tap, Helm chart, a real
 CalDAV provider to prove the seam, encrypted-at-rest tokens, `--dry-run` diff
 mode, and an `uninstall` command that removes every block the tool ever created.
+
+
+---
+
+## What changed after the audit
+
+The audit above is preserved as written, so the reasoning behind each finding
+stays readable. This section records what actually happened to each one.
+
+### Disposition
+
+| ID | Status | Notes |
+|---|---|---|
+| F-01 | **Fixed** | Docker and Fly guides rewritten around absolute container paths and a matching UID. Both the broken and the fixed form were run against the real image. |
+| F-02 | **Fixed** | `oauth2.ApprovalForce`; `Authorize` refuses to save a token with no refresh token. |
+| F-03 | **Fixed** | `persistingTokenSource` re-saves on change and never lets an omitted `refresh_token` erase the stored one. |
+| F-04 | **Fixed** | Free and declined events no longer hold time. Tentative still does, deliberately. |
+| F-05 | **Fixed** | `version` subcommand; the ldflag symbols now exist, guarded by a test. |
+| F-06 | **Fixed** | The Provider seam is on the production path. This is where N-01 came from. |
+| F-07 | **Fixed** | `Engine.Now` injected; every window test is built on it. |
+| F-08 | **Fixed** | In-memory block index; a steady-state pass makes zero per-event lookups, asserted by a test. |
+| F-09 | **Fixed** | `syncState` feeds real counts, timings and per-account health to the UI. |
+| F-10 | **Fixed** | `internal/metrics` with `/metrics`, `/healthz`, `/readyz`, hand-rolled exposition, zero new dependencies. |
+| F-11 | **Fixed** | Page rebuilt: responsive to 380px, contrast at or above 4.5:1 in both schemes, `aria-live`, confirmed destructive actions. Verified in a real browser. |
+| F-12 | **Fixed** | Per-field errors with `aria-invalid`; input preserved; focus moves to the first bad field. |
+| F-13 | **Fixed** | `internal/atomicfile`; both token and config writes use it. |
+| F-14 | **Deferred → issue** | Cross-account dedup by `iCalUID` needs design. Documented as a limitation in the README and FAQ. |
+| F-15 | **Partly fixed, partly deferred** | Most all-day events default to Free and are now skipped by the F-04 fix. Making the Busy case configurable is deferred to an issue; documented meanwhile. |
+| F-16 | **Fixed** | Concurrency group, OS/Go matrix, coverage gate, `go.mod` tidiness, fuzz smoke, Docker build, link check. |
+| F-17 | **Fixed** | Pinned goreleaser, SBOMs, cosign, provenance, multi-arch image. |
+| F-18 | **Fixed** | Channel token hashed before the constant-time compare. |
+| F-19 | **Fixed** | The false env-var claim is gone from the package doc. |
+| F-20 | **Fixed** | The config path no longer reaches the browser. |
+| F-21 | **Fixed** | Plus a nonce-based CSP replacing `unsafe-inline`. |
+| F-22 | **Fixed** | Help to stdout; documented exit codes 2/3/4/5/6. |
+| F-23 | **Fixed** | Doc comment corrected. |
+| F-24 | **Fixed** | `ErrTokenUnreadable`, with the matching next step in the CLI. |
+| F-25 | **Fixed** | Base images pinned by digest; explicit `USER`; build caching. |
+| F-26 | **Fixed** | A retried delete treats "already gone" as success; a first-attempt 404 still errors. |
+| F-27 | **Fixed** | `block_title` changes now re-title existing blocks. |
+| F-28 | **Documented** | The duplicated-block behaviour is in TROUBLESHOOTING.md and ADR 0002. |
+| F-29 | **Fixed** | Dead code and its tautological test removed. |
+| F-30 | **Fixed** | `Engine.log()` defaults to `slog.Default()`. |
+
+**All five High findings are fixed.** Two Mediums (F-14, and half of F-15) are
+deferred with a written reason and are listed as known limitations in the
+README rather than quietly dropped.
+
+### Findings that only surfaced during implementation
+
+These are the interesting ones — none were visible from reading the code, and
+each was caught by a test written for something else.
+
+#### N-01 — The Provider bridge dropped the block title, causing infinite write churn
+
+**Critical, had it shipped.** Found by the first test that ran the engine
+through the production client stack.
+
+`eventToGoogle` did not carry `Summary` across the neutral model. Combined with
+F-27's new title check, the engine would have seen every block as untitled,
+concluded the title had drifted, and rewritten **every block on every pass,
+forever** — an API write per block per poll interval, indefinitely.
+
+Neither change is wrong alone. F-06 and F-27 were each individually correct and
+individually tested; the bug lived in their interaction, and only appeared when
+the tests were pointed at the real production wiring. It is the concrete
+argument for [ADR 0006](docs/adr/0006-provider-seam.md)'s central claim: an
+abstraction production does not use is not tested, whatever its coverage says.
+
+Fixed by adding `Event.Title`, populated **only** for owned blocks — a real
+event's summary must never enter the neutral model, or the
+no-content-propagation guarantee stops being structural.
+
+#### N-02 — `FindBlockBySource` silently dropped its account filter
+
+**High.** Found by the new `httptest` Google API double, on its first run.
+
+```go
+call := c.svc.Events.List(calendarID).
+    PrivateExtendedProperty(sourceAccountKey + "=" + srcAccount).
+    PrivateExtendedProperty(sourceEventKey + "=" + srcEventID)
+```
+
+The generated setter uses `urlParams_.SetMulti`, which **replaces** the
+parameter rather than appending. The second call silently discarded the first,
+so the query filtered on event ID alone and could return a block belonging to a
+different source account.
+
+This was invisible to every existing test, because all of them substituted a
+fake *above* the HTTP layer — where the query is constructed correctly by the
+fake's own logic. It took a double that speaks the real wire format to see the
+actual request.
+
+Both terms now go in one call, and the result's source identity is re-verified
+locally rather than trusting the server-side filter.
+
+#### N-03 — Blocks shared `EventDateTime` pointers with their source events
+
+**Medium (latent).** Found while diagnosing an unexpected test failure.
+
+`ensureBlock` assigned `srcEvent.Start` and `srcEvent.End` — pointers — directly
+onto the block. The block on one account and the real event on another therefore
+shared mutable time structs in memory. Nothing exploited it in the current code,
+but any future write through one would have silently corrupted the other. Both
+are now deep-copied.
+
+#### N-04 — `-json` emitted nothing on a setup failure
+
+**Low.** Found while recording the CLI demos.
+
+A setup failure exited before the report was written, so `-json` produced empty
+stdout on the most common failure. A machine-readable flag has to be
+machine-readable on the error path too.
+
+#### N-05 — `version` reported `+dirty+dirty`
+
+**Nit.** Found in the first end-to-end run. Go already suffixes a pseudo-version
+derived from a dirty tree; we appended again.
+
+### Invariant coverage, after
+
+The matrix above described the state at audit time. Current state:
+
+| Row | Then | Now |
+|---|---|---|
+| 1 — a block is never mistaken for a real event | Covered | Covered, plus a fuzz target over ownership parsing |
+| 2 — no sync loops | **No coverage** | Covered: three accounts, repeated passes, asserted against both the fake and the production stack |
+| 3 — a real human event is never deleted | Provider path only, which production did not use | Covered on the **production** path, which now runs the enforcement |
+| 4 — GC only deletes provably-dead sources | Covered | Covered |
+| 5a — moved | Covered | Covered |
+| 5b — shortened | **No coverage** | Covered (table case) |
+| 5c — cancelled | Partial | Covered, including a seeded `status: cancelled` |
+| 5d — declined | **Not implemented** | Implemented and covered |
+| 5e — tentative | **Undecided** | Decided (blocks time), documented, covered |
+| 5f — Free/transparent | **Not implemented** | Implemented and covered |
+| 5g — all-day | **Accidental** | Behaviour documented; most cases resolved by 5f |
+| 5h — recurring | **No coverage** | Covered at the query level (`singleEvents=true` asserted against the real client) |
+| 6 — lookahead boundary | **No coverage** | Covered: seven boundary cases on an injected clock |
+| 7 — clock skew / look-back | **No coverage** | Covered: the window is asserted exactly |
+| 8 — timezone mismatch | **No coverage** | Covered, including cross-zone stability and a DST transition |
+| 9 — idempotency | **No coverage** | Covered: a counting fake asserts zero writes on a second pass, on both paths |
+| 10 — partial-pass safety | Covered | Covered |
+| 11 — insert idempotency | Covered | Covered |
+| 12 — no content propagation | Implicit | Covered explicitly on both paths, plus a fuzz target |
+
+**6 of 17 fully covered → 17 of 17.** Plus four fuzz targets and an
+`httptest` double exercising the real Google client, which had none.
+
+### Numbers
+
+| | Before | After |
+|---|---|---|
+| Total coverage | 62.2% | 69.6% |
+| `internal/sync` | 76.0% | 88.9% |
+| `internal/googleauth` | 44.0% | 77.4% |
+| `internal/config` | 85.3% | 93.4% |
+| `cmd/calendar-bridge` | 0.0% | 15.2% |
+| Fuzz targets | 0 | 4 |
+| Coverage enforced in CI | No | Yes, overall + per-package |
+| golangci-lint | Passing | Passing, 0 issues |
+
+Coverage is a weak signal and these numbers are not the point — rows 2, 3, 9 and
+12 of the matrix are. They are recorded because the gate is set from them.
