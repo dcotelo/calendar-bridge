@@ -2,11 +2,14 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // ambiguousInsertError is returned by retryingClient.InsertEvent when the
@@ -138,7 +141,31 @@ func (c *retryingClient) UpdateEvent(ctx context.Context, calendarID, eventID st
 }
 
 func (c *retryingClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
+	first := true
 	return retry(ctx, c.policy, c.onRetry("DeleteEvent"), func() error {
-		return c.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
+		err := c.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
+		if first {
+			first = false
+			return err
+		}
+		// On a RETRY only, treat "already gone" as success. A delete whose
+		// response was lost still deleted the event server-side, so the retry
+		// legitimately finds nothing there; reporting that as a failure would
+		// make every such pass look broken. On the FIRST attempt a 404/410 is
+		// still surfaced, since that means the caller asked to delete something
+		// that was never there.
+		if isGone(err) {
+			return nil
+		}
+		return err
 	})
+}
+
+// isGone reports whether err is the API saying the target does not exist.
+func isGone(err error) bool {
+	var apiErr *googleapi.Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.Code == http.StatusNotFound || apiErr.Code == http.StatusGone
 }

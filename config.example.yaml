@@ -49,3 +49,15 @@ block_title: "Busy (calendar-bridge)"
 #   enabled: true
 #   listen_addr: "127.0.0.1:8090"   # loopback only; non-loopback binds are refused
 #   auth_token: "CHANGE-ME-long-random-secret"  # optional; defense-in-depth on a shared host
+
+# Optional: Prometheus metrics and health probes. Off by default.
+# Serves /metrics (text exposition format), /healthz (liveness) and /readyz
+# (readiness — fails once the last successful sync is older than ready_max_age).
+# Read-only and unauthenticated: it exposes counts, timestamps and account
+# NAMES — never event data or credentials — but bind it where only your
+# monitoring can reach it. See docs/OBSERVABILITY.md.
+#
+# metrics:
+#   enabled: true
+#   listen_addr: "127.0.0.1:9090"  # bind loopback, or a private interface
+#   ready_max_age: "15m"           # default: 3x poll_interval; "0" disables the check

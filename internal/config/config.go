@@ -61,6 +61,33 @@ type Config struct {
 	// WebUI configures the optional local configuration web UI (see the `ui`
 	// subcommand and internal/webui). Disabled unless explicitly enabled.
 	WebUI WebUI `yaml:"web_ui" json:"web_ui"`
+
+	// Metrics configures the optional Prometheus metrics and health-probe
+	// endpoint. Disabled unless explicitly enabled.
+	Metrics Metrics `yaml:"metrics" json:"metrics"`
+}
+
+// Metrics configures the operational HTTP surface: /metrics in the Prometheus
+// text format, plus /healthz and /readyz probes.
+//
+// The surface is read-only and unauthenticated. It exposes counts, timestamps
+// and account NAMES — never event data, calendar IDs or credentials — but it
+// still describes your infrastructure, so bind it where only your monitoring
+// can reach it (loopback, a private interface, or a container network), as you
+// would any other exporter.
+type Metrics struct {
+	// Enabled turns the endpoint on. When false, nothing is served and no
+	// counters are kept.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// ListenAddr is the address to bind. Defaults to "127.0.0.1:9090".
+	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
+
+	// ReadyMaxAge is how stale the last successful sync may be before /readyz
+	// reports not-ready, as a Go duration. Empty means three poll intervals,
+	// which is the threshold the alerting example in the docs uses. Set "0" to
+	// disable the staleness check, leaving /readyz as a pure liveness signal.
+	ReadyMaxAge string `yaml:"ready_max_age" json:"ready_max_age"`
 }
 
 // Webhook configures Google Calendar push notifications. Push requires a
@@ -182,6 +209,31 @@ func (c *Config) applyDefaults() {
 	if c.WebUI.ListenAddr == "" {
 		c.WebUI.ListenAddr = "127.0.0.1:8090"
 	}
+	if c.Metrics.Enabled {
+		if c.Metrics.ListenAddr == "" {
+			c.Metrics.ListenAddr = "127.0.0.1:9090"
+		}
+		if c.Metrics.ReadyMaxAge == "" {
+			// Three poll intervals: long enough that one missed pass or a
+			// transient API failure doesn't flap readiness, short enough that a
+			// genuinely wedged instance is caught within ~15 minutes at the
+			// default 5m interval.
+			c.Metrics.ReadyMaxAge = threePollIntervals(c.PollInterval)
+		}
+	}
+}
+
+// threePollIntervals returns three times the given poll interval as a duration
+// string, falling back to "15m" (three times the 5m default) if it cannot be
+// parsed. Validate has already rejected an unparseable value by this point;
+// the fallback covers the empty case, where the default has not been applied
+// yet at the call site.
+func threePollIntervals(poll string) string {
+	d, err := time.ParseDuration(poll)
+	if err != nil || d <= 0 {
+		return "15m"
+	}
+	return (3 * d).String()
 }
 
 // Save validates the config and writes it back to path as YAML, atomically
@@ -333,6 +385,18 @@ func (c *Config) Validate() error {
 	}
 	if c.LookaheadDays < 0 {
 		return fmt.Errorf("lookahead_days must not be negative, got %d", c.LookaheadDays)
+	}
+
+	if c.Metrics.Enabled && c.Metrics.ReadyMaxAge != "" {
+		d, err := time.ParseDuration(c.Metrics.ReadyMaxAge)
+		if err != nil {
+			return fmt.Errorf("metrics.ready_max_age %q is not a valid duration: %w", c.Metrics.ReadyMaxAge, err)
+		}
+		// Zero explicitly disables the staleness check; negative is meaningless
+		// and would make /readyz permanently fail.
+		if d < 0 {
+			return fmt.Errorf("metrics.ready_max_age must not be negative, got %q (use \"0\" to disable the staleness check)", c.Metrics.ReadyMaxAge)
+		}
 	}
 	return nil
 }

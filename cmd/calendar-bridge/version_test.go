@@ -35,6 +35,15 @@ func TestBuildInfo_LinkerTargetsExist(t *testing.T) {
 	}
 }
 
+// Go appends "+dirty" to a pseudo-version it derives from a dirty tree; adding
+// it again produced "…+dirty+dirty".
+func TestBuildInfo_DirtySuffixIsNotDoubled(t *testing.T) {
+	v, _, _ := buildInfo()
+	if strings.Count(v, "+dirty") > 1 {
+		t.Errorf("version = %q, want at most one +dirty suffix", v)
+	}
+}
+
 func TestUsage_IsWrittenInFull(t *testing.T) {
 	var buf bytes.Buffer
 	usage(&buf)

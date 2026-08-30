@@ -358,3 +358,69 @@ func TestRetryingClient_InsertEvent_ReconcilesAmbiguousResult(t *testing.T) {
 		})
 	}
 }
+
+// A delete whose response was lost still deleted the event. The retry then
+// finds nothing there, and reporting that as a failure would make every such
+// pass look broken.
+func TestRetryingClient_DeleteRetryTreatsAlreadyGoneAsSuccess(t *testing.T) {
+	calls := 0
+	inner := &scriptedClient{
+		deleteFn: func() error {
+			calls++
+			if calls == 1 {
+				return &googleapi.Error{Code: http.StatusInternalServerError}
+			}
+			return &googleapi.Error{Code: http.StatusNotFound}
+		},
+	}
+	c := NewRetryingClient(inner, RetryPolicy{MaxAttempts: 3, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond},
+		newTestLogger(), "test")
+
+	if err := c.DeleteEvent(context.Background(), "primary", "blk-1", ""); err != nil {
+		t.Fatalf("DeleteEvent = %v, want nil: the first attempt's 5xx may still have deleted the event", err)
+	}
+	if calls != 2 {
+		t.Errorf("made %d delete calls, want 2", calls)
+	}
+}
+
+// On the FIRST attempt, "not found" means the caller asked to delete something
+// that was never there — a real error worth surfacing.
+func TestRetryingClient_DeleteFirstAttemptNotFoundStillErrors(t *testing.T) {
+	inner := &scriptedClient{
+		deleteFn: func() error { return &googleapi.Error{Code: http.StatusNotFound} },
+	}
+	c := NewRetryingClient(inner, RetryPolicy{MaxAttempts: 3, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond},
+		newTestLogger(), "test")
+
+	err := c.DeleteEvent(context.Background(), "primary", "blk-1", "")
+	var apiErr *googleapi.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != http.StatusNotFound {
+		t.Fatalf("DeleteEvent = %v, want the 404 surfaced on a first attempt", err)
+	}
+}
+
+// scriptedClient is a CalendarClient whose delete behaviour is supplied per
+// test; every other method is unused.
+type scriptedClient struct {
+	deleteFn func() error
+}
+
+func (s *scriptedClient) ListEvents(context.Context, string, time.Time, time.Time) ([]*calendar.Event, error) {
+	return nil, nil
+}
+func (s *scriptedClient) FindBlockBySource(context.Context, string, string, string) (*calendar.Event, error) {
+	return nil, nil
+}
+func (s *scriptedClient) GetEvent(context.Context, string, string) (*calendar.Event, error) {
+	return nil, nil
+}
+func (s *scriptedClient) InsertEvent(context.Context, string, *calendar.Event) (*calendar.Event, error) {
+	return nil, nil
+}
+func (s *scriptedClient) UpdateEvent(context.Context, string, string, *calendar.Event) (*calendar.Event, error) {
+	return nil, nil
+}
+func (s *scriptedClient) DeleteEvent(context.Context, string, string, string) error {
+	return s.deleteFn()
+}
