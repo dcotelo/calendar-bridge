@@ -36,16 +36,95 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# A software bill of materials per archive, so a consumer can answer "does this
+# release contain the vulnerable version of X?" without rebuilding it.
+sboms:
+  - id: archive-sboms
+    artifacts: archive
+
+# Keyless signing over the checksum file. Signing the checksums covers every
+# archive transitively, and keyless means there is no private key in this repo's
+# secrets to leak or rotate — the signature is bound to the release workflow's
+# OIDC identity and logged in Rekor.
+#
+# Verify a download with:
+#   cosign verify-blob \
+#     --certificate checksums.txt.pem \
+#     --signature checksums.txt.sig \
+#     --certificate-identity-regexp 'https://github.com/dcotelo/calendar-bridge/.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     checksums.txt
+#   sha256sum -c checksums.txt --ignore-missing
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
 changelog:
+  # Grouped by Conventional Commit type, so the release notes read as a summary
+  # rather than a commit dump.
+  use: github
   sort: asc
+  groups:
+    - title: Security and correctness fixes
+      regexp: '^fix(\(.+\))?!?:'
+      order: 0
+    - title: Features
+      regexp: '^feat(\(.+\))?!?:'
+      order: 1
+    - title: Performance
+      regexp: '^perf(\(.+\))?!?:'
+      order: 2
+    - title: Other changes
+      order: 99
   filters:
     exclude:
       - "^docs:"
+      - "^docs\\("
       - "^test:"
+      - "^test\\("
       - "^ci:"
+      - "^ci\\("
+      - "^chore:"
+      - "^chore\\("
+      - "^style:"
+      - "Merge pull request"
+      - "Merge remote-tracking branch"
 
 release:
   github:
     owner: dcotelo
     name: calendar-bridge
   prerelease: auto
+  footer: |
+    ## Verifying this release
+
+    Checksums are signed with [cosign](https://docs.sigstore.dev/) keylessly —
+    there is no long-lived key, and the signature is bound to the release
+    workflow's identity.
+
+    ```bash
+    cosign verify-blob \
+      --certificate checksums.txt.pem \
+      --signature checksums.txt.sig \
+      --certificate-identity-regexp 'https://github.com/dcotelo/calendar-bridge/.*' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      checksums.txt
+    sha256sum -c checksums.txt --ignore-missing
+    ```
+
+    Container image (multi-arch, `linux/amd64` and `linux/arm64`):
+
+    ```bash
+    docker pull ghcr.io/dcotelo/calendar-bridge:{{ .Version }}
+    cosign verify ghcr.io/dcotelo/calendar-bridge:{{ .Version }} \
+      --certificate-identity-regexp 'https://github.com/dcotelo/calendar-bridge/.*' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```

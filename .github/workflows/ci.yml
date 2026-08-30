@@ -8,8 +8,41 @@ on:
 permissions:
   contents: read
 
+# Only the newest run per ref matters. Superseded runs are cancelled so a burst
+# of pushes doesn't queue several full matrices and report out of order.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    name: test (${{ matrix.os }}, go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is in the matrix because the docs recommend a launchd unit and
+        # goreleaser ships darwin binaries; windows because goreleaser ships
+        # those too and internal/googleauth has a Windows-specific branch in its
+        # file-permission check.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go: ["stable"]
+        include:
+          - os: ubuntu-latest
+            go: "oldstable"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -race
+
+  gofmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -18,9 +51,6 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./... -race -cover
       - name: gofmt check
         run: |
           fmt_out=$(gofmt -l .)
@@ -29,6 +59,30 @@ jobs:
             echo "$fmt_out"
             exit 1
           fi
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      # The same target developers run locally, so a green `make cover` means a
+      # green job. It enforces an overall floor plus a per-package floor for
+      # every package that carries logic.
+      - run: make cover
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
 
   lint:
     runs-on: ubuntu-latest
@@ -57,3 +111,54 @@ jobs:
       # silently start passing) every PR in this repo.
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - run: govulncheck ./...
+
+  fuzz:
+    name: fuzz (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      # A short budget per target: enough to catch a regression that breaks the
+      # seed corpus or panics immediately, without turning every PR into a
+      # multi-minute fuzzing session.
+      - run: make fuzz FUZZTIME=20s
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      # Build only, never push, on PRs: the release workflow owns publishing.
+      # This exists so a Dockerfile change that doesn't build is caught before
+      # a tag, not during one.
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  links:
+    name: markdown links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: lycheeverse/lychee-action@82202e5e9c2f4ef1a55a3d02563e1cb6041e5332 # v2.4.1
+        with:
+          args: >-
+            --no-progress
+            --max-retries 2
+            --exclude-path ./docs/assets
+            --accept 200,206,429
+            '**/*.md'
+          fail: true

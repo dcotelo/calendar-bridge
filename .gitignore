@@ -18,3 +18,4 @@ secrets/
 *.swp
 coverage.out
 bin/
+dist/

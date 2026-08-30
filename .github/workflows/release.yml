@@ -5,59 +5,122 @@ on:
     tags:
       - "v*"
 
-# No default write access at the workflow level; each job that needs to
-# write grants itself exactly the scope it needs, nothing more.
+# No default write access at the workflow level; each job that needs to write
+# grants itself exactly the scope it needs, nothing more.
 permissions:
   contents: read
 
 jobs:
-  goreleaser:
+  # Gate the release on the same checks a PR gets. A tag that doesn't pass
+  # should not produce artifacts anyone can install.
+  verify:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # to create the GitHub release and upload assets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - run: go test ./...
-      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -race
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+      - run: govulncheck ./...
+
+  goreleaser:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to create the GitHub release and upload assets
+      id-token: write # for cosign keyless signing via the OIDC token
+      attestations: write # to attach build provenance to the binaries
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # goreleaser needs full history for the changelog
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      # syft produces the SBOMs goreleaser attaches; cosign signs the checksum
+      # file keylessly, using this workflow's OIDC identity as the subject, so
+      # there is no signing key to store or rotate.
+      - uses: anchore/sbom-action/download-syft@7b36ad622f042cab6f59a75c2ac24ccb256e9b45 # v0.20.4
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
-          version: latest
+          # Pinned rather than "latest": goreleaser produces the artifacts
+          # people install, so an unreviewed upgrade lands in the release path.
+          version: "~> v2.12"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Attest build provenance for the release binaries
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: "dist/*.tar.gz,dist/*.zip,dist/checksums.txt"
+
   docker:
+    needs: verify
     runs-on: ubuntu-latest
-    needs: goreleaser
     permissions:
       contents: read
       packages: write # to push the image to ghcr.io
+      id-token: write # for cosign keyless signing
+      attestations: write # to attach image provenance
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           push: true
+          # arm64 matters: the Raspberry Pi and Apple-silicon deployment paths
+          # are documented, and an amd64-only image makes both of them wrong.
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Sign the image (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes "ghcr.io/${GITHUB_REPOSITORY}@${DIGEST}"
+
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

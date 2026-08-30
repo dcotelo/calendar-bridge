@@ -1,0 +1,24 @@
+# gitleaks configuration for calendar-bridge.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and documentation placeholders, none of which are real credentials."
+paths = [
+  # Fabricated OAuth client documents used by the googleauth tests. There is no
+  # real project, client, or secret behind them.
+  '''internal/googleauth/.*_test\.go''',
+  # Synthetic tokens and credentials generated for the screenshot fixtures.
+  '''scripts/screenshots/.*''',
+  # Documentation uses obvious placeholders (CHANGE-ME-…, <your-app-name>).
+  '''docs/.*\.md''',
+  '''README\.md''',
+  '''config\.example\.yaml''',
+]
+regexTarget = "match"
+regexes = [
+  '''NOT-A-REAL-SECRET''',
+  '''CHANGE-ME[-A-Za-z0-9_]*''',
+  '''fake-(access|refresh)-token''',
+  '''ya29\.FAKE[-A-Za-z0-9_]*''',
+]
