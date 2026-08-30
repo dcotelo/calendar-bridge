@@ -342,18 +342,13 @@ type passReport struct {
 // err is safe to include: config.Load and the googleauth setup errors are
 // path-free by construction, which their own tests assert.
 func emitFailureReport(dryRun bool, err error) {
-	rep := passReport{
+	writeJSONReport(passReport{
 		Version:   versionString(),
 		DryRun:    dryRun,
 		OK:        false,
 		Error:     err.Error(),
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if encErr := enc.Encode(rep); encErr != nil {
-		fmt.Fprintf(os.Stderr, "writing JSON report: %v\n", encErr)
-	}
+	})
 }
 
 // wasInterrupted reports whether a failed pass was cut short by SIGINT/SIGTERM
@@ -441,12 +436,7 @@ func runSyncOnce(args []string) {
 		if syncErr != nil && !interrupted {
 			rep.Error = syncErr.Error()
 		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if encErr := enc.Encode(rep); encErr != nil {
-			fmt.Fprintf(os.Stderr, "writing JSON report: %v\n", encErr)
-			os.Exit(exitRuntime)
-		}
+		writeJSONReport(rep)
 	}
 
 	switch {
@@ -461,6 +451,16 @@ func runSyncOnce(args []string) {
 		logger.Info("sync pass complete", "dry_run", *dryRun,
 			"created", res.Created, "updated", res.Updated, "deleted", res.Deleted,
 			"skipped", res.Skipped, "duration", res.Duration())
+	}
+}
+
+// writeJSONReport emits the pass report as the single JSON object on stdout.
+func writeJSONReport(rep passReport) {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(rep); err != nil {
+		fmt.Fprintf(os.Stderr, "writing JSON report: %v\n", err)
+		os.Exit(exitRuntime)
 	}
 }
 
