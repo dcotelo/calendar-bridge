@@ -45,12 +45,47 @@ type SyncFunc func() error
 type StatusFunc func() Status
 
 // Status is the read-only runtime snapshot shown in the UI.
+//
+// It carries counts, timestamps and account names only. No event data, no
+// calendar contents, and no credential or token material ever appears here —
+// this struct is serialised straight to the browser.
 type Status struct {
-	Running     bool   `json:"running"`
-	LastSync    string `json:"last_sync,omitempty"`    // RFC3339, empty if never
-	LastError   string `json:"last_error,omitempty"`   // last sync error, if any
-	AccountsNum int    `json:"accounts"`               // number of configured accounts
-	PushEnabled bool   `json:"push_enabled,omitempty"` // reserved for webhook integration
+	// Running reports whether a background sync loop is live in this process.
+	// False when the UI is served on its own (`calendar-bridge ui`), where
+	// syncs happen only when someone presses "Sync now".
+	Running bool `json:"running"`
+	// LastSync is when the last fully-successful pass started (RFC3339 UTC),
+	// empty if there has never been one.
+	LastSync string `json:"last_sync,omitempty"`
+	// LastAttempt is when the last pass started, successful or not.
+	LastAttempt string `json:"last_attempt,omitempty"`
+	// LastDurationMS is how long the last successful pass took.
+	LastDurationMS int64 `json:"last_duration_ms,omitempty"`
+	// LastError is the error from the last pass, empty if it succeeded.
+	LastError string `json:"last_error,omitempty"`
+	// AccountsNum is the number of configured accounts.
+	AccountsNum int `json:"accounts"`
+	// Accounts reports per-account health from the last pass, so "which
+	// account is broken?" is answerable without reading the logs.
+	Accounts []AccountStatus `json:"account_status,omitempty"`
+	// Created, Updated, Deleted and Skipped are block counts from the last
+	// pass. Skipped counts source events deliberately not propagated because
+	// they were marked Free or declined.
+	Created int `json:"created"`
+	Updated int `json:"updated"`
+	Deleted int `json:"deleted"`
+	Skipped int `json:"skipped"`
+	// PushEnabled reports whether Google Calendar push notifications are on.
+	PushEnabled bool `json:"push_enabled"`
+}
+
+// AccountStatus is one account's health as of the last pass.
+type AccountStatus struct {
+	Name string `json:"name"`
+	// Healthy is false when the account's events could not be fetched — an
+	// expired or revoked token, or a network failure. calendar-bridge excludes
+	// such an account from that pass entirely rather than acting on stale data.
+	Healthy bool `json:"healthy"`
 }
 
 // Server is the webui HTTP handler set. Construct with New and mount Handler()

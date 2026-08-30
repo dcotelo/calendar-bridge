@@ -96,6 +96,25 @@ type Event struct {
 	// Cancelled reports whether the provider marks this event as cancelled
 	// (Google's "cancelled" status; equivalents on other providers).
 	Cancelled bool
+	// Transparent reports whether the provider marks this event as NOT
+	// consuming the owner's time ("Free" in Google Calendar's UI,
+	// transparency: "transparent"). A transparent event must not produce a
+	// busy block elsewhere.
+	Transparent bool
+	// SelfResponse is the calendar owner's invitation response
+	// ("accepted" / "declined" / "tentative" / "needsAction"), or "" when the
+	// owner is not an attendee (a personal appointment). A declined
+	// invitation must not produce a busy block elsewhere.
+	SelfResponse string
+	// Title is the busy block's title, and is populated ONLY for
+	// calendar-bridge-owned blocks — where it is a string this tool chose, not
+	// user content. It is deliberately left empty for real user events: a real
+	// event's summary must never enter the neutral model, or the "event content
+	// never crosses an account boundary" guarantee would stop being structural.
+	//
+	// The engine needs it so a change to block_title can be detected on blocks
+	// that already exist.
+	Title string
 	// Ownership carries the calendar-bridge tagging metadata (empty Owner for
 	// real events).
 	Ownership Ownership
@@ -118,13 +137,12 @@ type Event struct {
 //     (with ErrNotOwned) an Ownership that is not owner-tagged or lacks a
 //     source account/event ID — calendar-bridge must never create a busy block
 //     it cannot later identify and clean up.
-//   - UpdateBlockTime moves an existing owned block (identified and carried
-//     by block, which retains its ownership metadata) to a new span.
-//     Implementations MUST reject (with ErrNotOwned) a block that is not
-//     owner-tagged with a complete source identity, and MUST preserve the
-//     block's ownership tagging and title; for providers whose update is a
-//     full replace (e.g. Google), send the complete block, not just the new
-//     times.
+//   - UpdateBlock moves an existing owned block (identified and carried by
+//     block, which retains its ownership metadata) to a new span and re-asserts
+//     its title. Implementations MUST reject (with ErrNotOwned) a block that is
+//     not owner-tagged with a complete source identity, and MUST preserve the
+//     block's ownership tagging; for providers whose update is a full replace
+//     (e.g. Google), send the complete block, not just the changed fields.
 //   - DeleteBlock removes an owned block, identified by ID. The implementation
 //     MUST re-read the target and reject an untagged (non-owned) event with
 //     ErrNotOwned rather than deleting it — an untagged real event must never
@@ -134,6 +152,6 @@ type Provider interface {
 	ListEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]Event, error)
 	FindOwnedBlock(ctx context.Context, calendarID, srcAccount, srcEventID string) (*Event, error)
 	InsertBlock(ctx context.Context, calendarID, title string, start, end TimeSpan, own Ownership) (*Event, error)
-	UpdateBlockTime(ctx context.Context, calendarID string, block Event, start, end TimeSpan) (*Event, error)
+	UpdateBlock(ctx context.Context, calendarID string, block Event, title string, start, end TimeSpan) (*Event, error)
 	DeleteBlock(ctx context.Context, calendarID, blockID string) error
 }

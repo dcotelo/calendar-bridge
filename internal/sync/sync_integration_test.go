@@ -28,7 +28,7 @@ func TestSyncOnce_PropagatesBusyBlockBothWays(t *testing.T) {
 		Account{Name: "b", CalendarID: "primary", Client: b},
 	)
 
-	if err := engine.SyncOnce(context.Background()); err != nil {
+	if _, err := engine.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("SyncOnce() error = %v, want nil", err)
 	}
 
@@ -57,7 +57,7 @@ func TestSyncOnce_GarbageCollectsRemovedSourceEvent(t *testing.T) {
 		Account{Name: "b", CalendarID: "primary", Client: b},
 	)
 
-	if err := engine.SyncOnce(context.Background()); err != nil {
+	if _, err := engine.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("first SyncOnce() error = %v, want nil", err)
 	}
 	if len(b.ownedBlocks()) != 1 {
@@ -69,7 +69,7 @@ func TestSyncOnce_GarbageCollectsRemovedSourceEvent(t *testing.T) {
 	delete(a.events, "real-a-1")
 	a.mu.Unlock()
 
-	if err := engine.SyncOnce(context.Background()); err != nil {
+	if _, err := engine.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("second SyncOnce() error = %v, want nil", err)
 	}
 	if len(b.ownedBlocks()) != 0 {
@@ -91,7 +91,7 @@ func TestSyncOnce_FailedAccountExcludedButOthersStillSync(t *testing.T) {
 		Account{Name: "c", CalendarID: "primary", Client: c},
 	)
 
-	err := engine.SyncOnce(context.Background())
+	_, err := engine.SyncOnce(context.Background())
 	if err == nil {
 		t.Fatal("SyncOnce() error = nil, want an error reporting the failed account")
 	}
@@ -120,7 +120,7 @@ func TestSyncOnce_FailedSourceAccountDoesNotTriggerGC(t *testing.T) {
 		Account{Name: "b", CalendarID: "primary", Client: b},
 	)
 
-	if err := engine.SyncOnce(context.Background()); err != nil {
+	if _, err := engine.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("first SyncOnce() error = %v, want nil", err)
 	}
 	if len(b.ownedBlocks()) != 1 {
@@ -132,7 +132,7 @@ func TestSyncOnce_FailedSourceAccountDoesNotTriggerGC(t *testing.T) {
 	// pass, since we have no evidence the source event is actually gone.
 	a.failList = errors.New("simulated: token expired")
 
-	if err := engine.SyncOnce(context.Background()); err == nil {
+	if _, err := engine.SyncOnce(context.Background()); err == nil {
 		t.Fatal("SyncOnce() error = nil, want error reporting a's failure")
 	}
 	if len(b.ownedBlocks()) != 1 {
@@ -150,7 +150,7 @@ func TestSyncOnce_UpdatesBlockWhenSourceEventMoves(t *testing.T) {
 		Account{Name: "b", CalendarID: "primary", Client: b},
 	)
 
-	if err := engine.SyncOnce(context.Background()); err != nil {
+	if _, err := engine.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("first SyncOnce() error = %v, want nil", err)
 	}
 
@@ -158,7 +158,7 @@ func TestSyncOnce_UpdatesBlockWhenSourceEventMoves(t *testing.T) {
 	moved := realEventIn("real-a-1", 4*24*time.Hour, time.Hour)
 	a.seed("real-a-1", moved)
 
-	if err := engine.SyncOnce(context.Background()); err != nil {
+	if _, err := engine.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("second SyncOnce() error = %v, want nil", err)
 	}
 
@@ -182,7 +182,7 @@ func TestSyncOnce_FewerThanTwoHealthyAccountsReturnsError(t *testing.T) {
 		Account{Name: "b", CalendarID: "primary", Client: b},
 	)
 
-	if err := engine.SyncOnce(context.Background()); err == nil {
+	if _, err := engine.SyncOnce(context.Background()); err == nil {
 		t.Fatal("SyncOnce() error = nil, want error when fewer than 2 accounts are healthy")
 	}
 }
@@ -223,7 +223,7 @@ func TestSyncOnce_NeverOverwritesUnownedEventWithMatchingProperties(t *testing.T
 	}
 	b.seed("b-imposter", imposter)
 
-	if err := engine(a, b).SyncOnce(context.Background()); err != nil {
+	if _, err := engine(a, b).SyncOnce(context.Background()); err != nil {
 		t.Fatalf("SyncOnce() error = %v, want nil", err)
 	}
 

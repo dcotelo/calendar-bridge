@@ -57,12 +57,22 @@ func ownershipFromGoogle(ev *calendar.Event) Ownership {
 }
 
 func eventFromGoogle(ev *calendar.Event) Event {
+	// Only an owned block's title crosses into the neutral model; see
+	// Event.Title. A real event's summary is dropped here, which is what makes
+	// the no-content-propagation guarantee structural rather than conventional.
+	var title string
+	if isOwnedBlock(ev) {
+		title = ev.Summary
+	}
 	return Event{
-		ID:        ev.Id,
-		Start:     spanFromGoogle(ev.Start),
-		End:       spanFromGoogle(ev.End),
-		Cancelled: ev.Status == "cancelled",
-		Ownership: ownershipFromGoogle(ev),
+		ID:           ev.Id,
+		Title:        title,
+		Start:        spanFromGoogle(ev.Start),
+		End:          spanFromGoogle(ev.End),
+		Cancelled:    ev.Status == "cancelled",
+		Transparent:  ev.Transparency == "transparent",
+		SelfResponse: selfResponseStatus(ev),
+		Ownership:    ownershipFromGoogle(ev),
 	}
 }
 
@@ -164,13 +174,13 @@ func (g *googleProvider) InsertBlock(ctx context.Context, calendarID, title stri
 	return &e, nil
 }
 
-func (g *googleProvider) UpdateBlockTime(ctx context.Context, calendarID string, block Event, start, end TimeSpan) (*Event, error) {
+func (g *googleProvider) UpdateBlock(ctx context.Context, calendarID string, block Event, title string, start, end TimeSpan) (*Event, error) {
 	// Google's Events.Update is a full replace: sending only the new times
-	// would wipe the ownership extended properties and the block title,
-	// making the block indistinguishable from a real event on the next pass.
-	// Re-find the full owned block by its source identity, mutate only its
-	// times, and update — preserving every other field. This is exactly the
-	// invariant the engine's original ensureBlock relied on.
+	// would wipe the ownership extended properties, making the block
+	// indistinguishable from a real event on the next pass. Re-find the full
+	// owned block by its source identity, mutate only its times and title, and
+	// update — preserving every other field. This is exactly the invariant the
+	// engine's original ensureBlock relied on.
 	own := block.Ownership
 	// Refuse to update anything not provably ours with a complete source
 	// identity: without it we can't safely locate the block and could target a
@@ -199,6 +209,9 @@ func (g *googleProvider) UpdateBlockTime(ctx context.Context, calendarID string,
 	}
 	full.Start = spanToGoogle(start)
 	full.End = spanToGoogle(end)
+	if title != "" {
+		full.Summary = title
+	}
 	updated, err := g.client.UpdateEvent(ctx, calendarID, full.Id, full)
 	if err != nil {
 		return nil, err

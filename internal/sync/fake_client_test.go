@@ -22,6 +22,13 @@ type fakeCalendarClient struct {
 	events map[string]*calendar.Event // event ID -> event
 	nextID int
 
+	// Call counters, so a test can assert that a second identical pass
+	// performs zero writes (the idempotency invariant) rather than only that
+	// it produced the same end state.
+	calls struct {
+		list, find, get, insert, update, del int
+	}
+
 	// Failure injection: when set, the corresponding method always
 	// returns this error instead of performing its normal operation.
 	failList   error
@@ -48,6 +55,7 @@ func (f *fakeCalendarClient) seed(id string, ev *calendar.Event) {
 func (f *fakeCalendarClient) ListEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]*calendar.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls.list++
 	if f.failList != nil {
 		return nil, f.failList
 	}
@@ -101,6 +109,7 @@ func eventTime(dt *calendar.EventDateTime) (time.Time, bool) {
 func (f *fakeCalendarClient) FindBlockBySource(ctx context.Context, calendarID, srcAccount, srcEventID string) (*calendar.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls.find++
 	if f.failFind != nil {
 		return nil, f.failFind
 	}
@@ -119,6 +128,7 @@ func (f *fakeCalendarClient) FindBlockBySource(ctx context.Context, calendarID, 
 func (f *fakeCalendarClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls.get++
 	if f.failGet != nil {
 		return nil, f.failGet
 	}
@@ -128,6 +138,7 @@ func (f *fakeCalendarClient) GetEvent(ctx context.Context, calendarID, eventID s
 func (f *fakeCalendarClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls.insert++
 	if f.failInsert != nil {
 		return nil, f.failInsert
 	}
@@ -140,6 +151,7 @@ func (f *fakeCalendarClient) InsertEvent(ctx context.Context, calendarID string,
 func (f *fakeCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls.update++
 	if f.failUpdate != nil {
 		return nil, f.failUpdate
 	}
@@ -154,6 +166,7 @@ func (f *fakeCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventI
 func (f *fakeCalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls.del++
 	if f.failDelete != nil {
 		return f.failDelete
 	}
@@ -185,6 +198,38 @@ func (f *fakeCalendarClient) ownedBlocks() []*calendar.Event {
 		}
 	}
 	return out
+}
+
+// writes returns the total number of mutating API calls made so far. The
+// idempotency invariant is "a second identical pass performs zero writes", and
+// this is what makes that assertable.
+func (f *fakeCalendarClient) writes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls.insert + f.calls.update + f.calls.del
+}
+
+// lookups returns the number of read calls that cost a round trip in
+// production. Used to prove the in-memory block index removes the per-event
+// FindBlockBySource call in steady state.
+func (f *fakeCalendarClient) lookups() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls.find
+}
+
+func (f *fakeCalendarClient) resetCounts() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls.list, f.calls.find, f.calls.get = 0, 0, 0
+	f.calls.insert, f.calls.update, f.calls.del = 0, 0, 0
+}
+
+// byID returns the event with the given ID, or nil.
+func (f *fakeCalendarClient) byID(id string) *calendar.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.events[id]
 }
 
 // realEventIn builds a fixture event offset from time.Now(), so it always

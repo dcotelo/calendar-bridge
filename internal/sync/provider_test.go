@@ -70,7 +70,7 @@ func TestGoogleProvider_RoundTripsNeutralModel(t *testing.T) {
 	// Update its time — ownership MUST survive (Google update is full replace).
 	newStart := TimeSpan{DateTime: time.Now().Add(72 * time.Hour).Format(time.RFC3339), TimeZone: "UTC"}
 	newEnd := TimeSpan{DateTime: time.Now().Add(73 * time.Hour).Format(time.RFC3339), TimeZone: "UTC"}
-	updated, err := p.UpdateBlockTime(ctx, "primary", *found, newStart, newEnd)
+	updated, err := p.UpdateBlock(ctx, "primary", *found, "Busy (calendar-bridge)", newStart, newEnd)
 	if err != nil {
 		t.Fatalf("UpdateBlockTime error = %v", err)
 	}
@@ -149,7 +149,7 @@ func TestEngine_RunsThroughProviderBridge(t *testing.T) {
 		Logger:        newTestLogger(),
 	}
 
-	if err := eng.SyncOnce(context.Background()); err != nil {
+	if _, err := eng.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("SyncOnce through bridge error = %v", err)
 	}
 
@@ -173,7 +173,7 @@ func TestEngine_RunsThroughProviderBridge(t *testing.T) {
 	// Move the source, sync again: block must move, not duplicate, and keep
 	// its ownership through the neutral update path.
 	fakeA.seed("real-a-1", realEventIn("real-a-1", 5*24*time.Hour, time.Hour))
-	if err := eng.SyncOnce(context.Background()); err != nil {
+	if _, err := eng.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("second SyncOnce through bridge error = %v", err)
 	}
 	blocks = fakeB.ownedBlocks()
