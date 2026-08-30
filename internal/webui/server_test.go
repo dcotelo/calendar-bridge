@@ -595,11 +595,108 @@ func TestIndex_ServedWithSecurityHeaders(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("index status = %d, want 200", w.Code)
 	}
-	wantCSP := "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'"
-	if got := w.Header().Get("Content-Security-Policy"); got != wantCSP {
-		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
+
+	csp := w.Header().Get("Content-Security-Policy")
+	// Asserted directive by directive rather than as one exact string, so
+	// adding a directive doesn't fail the test but weakening one does.
+	for _, want := range []string{
+		"default-src 'none'",
+		"connect-src 'self'",
+		"base-uri 'none'",
+		"frame-ancestors 'none'",
+		"form-action 'none'",
+	} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP is missing %q; got %q", want, csp)
+		}
 	}
-	if w.Header().Get("X-Content-Type-Options") != "nosniff" {
-		t.Error("index missing X-Content-Type-Options: nosniff")
+	// 'unsafe-inline' would defeat the point of the nonce.
+	if strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "unsafe-eval") {
+		t.Errorf("CSP contains an unsafe- directive: %q", csp)
+	}
+
+	for _, tc := range []struct{ header, want string }{
+		{"X-Content-Type-Options", "nosniff"},
+		{"X-Frame-Options", "DENY"},
+		{"Referrer-Policy", "no-referrer"},
+		{"Cache-Control", "no-store"},
+	} {
+		if got := w.Header().Get(tc.header); got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.header, got, tc.want)
+		}
+	}
+}
+
+// The nonce in the header must match the one in the served body, and must
+// differ on every response — a fixed nonce is no better than 'unsafe-inline'.
+func TestIndex_CSPNonceMatchesTheBodyAndRotates(t *testing.T) {
+	srv := newTestServer(t, "")
+
+	fetch := func() (nonce, body string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req(t, http.MethodGet, "/", "", ""))
+		csp := w.Header().Get("Content-Security-Policy")
+		const marker = "script-src 'nonce-"
+		i := strings.Index(csp, marker)
+		if i < 0 {
+			t.Fatalf("CSP has no script-src nonce: %q", csp)
+		}
+		rest := csp[i+len(marker):]
+		j := strings.Index(rest, "'")
+		if j < 0 {
+			t.Fatalf("unterminated nonce in CSP: %q", csp)
+		}
+		return rest[:j], w.Body.String()
+	}
+
+	n1, body1 := fetch()
+	if n1 == "" {
+		t.Fatal("empty CSP nonce")
+	}
+	if strings.Contains(body1, "__CSP_NONCE__") {
+		t.Error("the served page still contains the nonce placeholder; its style and script would be blocked")
+	}
+	if got := strings.Count(body1, `nonce="`+n1+`"`); got != 2 {
+		t.Errorf("body carries the header's nonce %d times, want 2 (the inline style and the inline script)", got)
+	}
+
+	n2, _ := fetch()
+	if n1 == n2 {
+		t.Error("the CSP nonce is identical across responses; it must be per-response to be worth anything")
+	}
+}
+
+// The config path must not reach the browser, matching how the CLI keeps it out
+// of logs.
+func TestGetConfig_ErrorDoesNotLeakTheConfigPath(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "definitely-not-here", "config.yaml")
+	srv, err := New(Options{ConfigPath: missing, ListenAddr: "127.0.0.1:0", Logger: testLogger()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodGet, "/api/config", "", ""))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if strings.Contains(w.Body.String(), dir) {
+		t.Errorf("the response leaks the config path: %s", w.Body.String())
+	}
+}
+
+func TestAPIResponses_AreNotCacheable(t *testing.T) {
+	srv := newTestServer(t, "")
+	for _, path := range []string{"/api/config", "/api/status"} {
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req(t, http.MethodGet, path, "", ""))
+		if got := w.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s Cache-Control = %q, want no-store", path, got)
+		}
+		if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s X-Content-Type-Options = %q, want nosniff", path, got)
+		}
 	}
 }

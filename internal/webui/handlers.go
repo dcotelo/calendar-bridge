@@ -1,6 +1,9 @@
 package webui
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,8 +13,14 @@ import (
 )
 
 // writeJSON writes v as JSON with the given status.
+//
+// Every API response carries no-store: the config and status payloads describe
+// a live local admin surface and must never sit in a disk cache or be replayed
+// from one after the operator has moved on.
 func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		s.logger.Error("webui: encoding response", "error", err)
@@ -32,7 +41,12 @@ func (s *Server) writeError(w http.ResponseWriter, status int, msg string) {
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := config.Load(s.configPath)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "loading config: "+err.Error())
+		// config.Load embeds the config path in its error text. Keep it out of
+		// the response: the browser has no use for the server's filesystem
+		// layout, and the operator already knows the path they passed.
+		s.logger.Warn("webui: could not load config for GET /api/config")
+		s.writeError(w, http.StatusInternalServerError,
+			"could not load the configuration file (check the -config path and its contents)")
 		return
 	}
 	// Redact both secrets: the browser doesn't need them back, and echoing
@@ -141,12 +155,56 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	nonce, err := newNonce()
+	if err != nil {
+		s.logger.Error("webui: generating CSP nonce", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Conservative CSP: everything is inline and self-hosted; block external
-	// loads entirely.
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
+	// Strict CSP. The page is fully self-contained — no external assets, no
+	// CDN — and the inline style and script blocks are authorised by a
+	// per-response nonce rather than 'unsafe-inline', so injected markup
+	// cannot execute even if something ever managed to reach the DOM.
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; "+
+			"style-src 'nonce-"+nonce+"'; "+
+			"script-src 'nonce-"+nonce+"'; "+
+			"connect-src 'self'; "+
+			"img-src 'self' data:; "+
+			"base-uri 'none'; "+
+			"frame-ancestors 'none'; "+
+			"form-action 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if _, err := w.Write(indexHTML); err != nil {
+	// Legacy equivalent of frame-ancestors, for agents predating CSP level 2.
+	w.Header().Set("X-Frame-Options", "DENY")
+	// The page URL can carry no secrets, but there is no reason to hand any
+	// referrer to anything the operator navigates to from here.
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cache-Control", "no-store")
+
+	if _, err := w.Write(pageWithNonce(nonce)); err != nil {
 		s.logger.Error("webui: writing index", "error", err)
 	}
+}
+
+// noncePlaceholder is the token the embedded page carries wherever a CSP nonce
+// must be substituted in.
+const noncePlaceholder = "__CSP_NONCE__"
+
+// newNonce returns a fresh base64 CSP nonce.
+func newNonce() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawStdEncoding.EncodeToString(b), nil
+}
+
+// pageWithNonce returns the embedded page with its nonce placeholders filled
+// in. The page is a few tens of kilobytes and this is a loopback admin UI, so
+// substituting per request costs nothing worth optimising away.
+func pageWithNonce(nonce string) []byte {
+	return bytes.ReplaceAll(indexHTML, []byte(noncePlaceholder), []byte(nonce))
 }
