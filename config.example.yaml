@@ -23,3 +23,12 @@ accounts:
 poll_interval: 5m
 lookahead_days: 30
 block_title: "Busy (calendar-bridge)"
+
+# Optional: local configuration web UI (see docs/web-ui.md). Off by default.
+# Loopback-only unless you set auth_token; the UI never exposes credential or
+# token file contents to the browser. Run with: calendar-bridge ui
+#
+# web_ui:
+#   enabled: true
+#   listen_addr: "127.0.0.1:8090"   # loopback only; non-loopback binds are refused
+#   auth_token: "CHANGE-ME-long-random-secret"  # optional; defense-in-depth on a shared host

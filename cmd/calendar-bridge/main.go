@@ -5,9 +5,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,6 +18,7 @@ import (
 	"github.com/dcotelo/calendar-bridge/internal/config"
 	"github.com/dcotelo/calendar-bridge/internal/googleauth"
 	"github.com/dcotelo/calendar-bridge/internal/sync"
+	"github.com/dcotelo/calendar-bridge/internal/webui"
 )
 
 // syncCycleTimeout bounds a single SyncOnce pass so a hung Google API call
@@ -36,6 +39,8 @@ func main() {
 		runSync(os.Args[2:])
 	case "sync-once":
 		runSyncOnce(os.Args[2:])
+	case "ui":
+		runUI(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -57,6 +62,10 @@ Usage:
 
   calendar-bridge run -config config.yaml
       Run the sync loop continuously, polling at the configured interval.
+
+  calendar-bridge ui -config config.yaml
+      Serve the local configuration web UI (loopback-only by default; set
+      web_ui.auth_token to expose it with authentication).
 `)
 }
 
@@ -208,5 +217,104 @@ func runSync(args []string) {
 			return
 		case <-time.After(interval):
 		}
+	}
+}
+
+func runUI(args []string) {
+	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	configPath := fs.String("config", "config.yaml", "path to config file")
+	_ = fs.Parse(args)
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		// config.Load embeds the path in its error; keep it out of stderr
+		// (shared logs) and emit a stable message. The operator knows the path
+		// they passed via -config.
+		fmt.Fprintln(os.Stderr, "ui: failed to load config (check -config path and file contents)")
+		os.Exit(1)
+	}
+	if !cfg.WebUI.Enabled {
+		fmt.Fprintln(os.Stderr, "ui: web_ui.enabled is false in config; set it to true to run the UI")
+		os.Exit(1)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// syncNow builds an engine on demand and runs a single pass. Building per
+	// invocation keeps token/credential reads fresh (e.g. after re-auth) and
+	// avoids holding calendar clients open while the UI idles.
+	syncNow := func() error {
+		syncCtx, cancel := context.WithTimeout(ctx, syncCycleTimeout)
+		defer cancel()
+		// Reload config so a just-saved change takes effect without a restart.
+		current, err := config.Load(*configPath)
+		if err != nil {
+			return fmt.Errorf("reloading config: %w", err)
+		}
+		engine, err := buildEngine(syncCtx, current, logger)
+		if err != nil {
+			return fmt.Errorf("setting up sync: %w", err)
+		}
+		return engine.SyncOnce(syncCtx)
+	}
+
+	statusFn := func() webui.Status {
+		current, err := config.Load(*configPath)
+		if err != nil {
+			// config.Load embeds the config path in its error text; keep that
+			// out of both the shared log and the reported status (this runs
+			// on every page load, sync, and reload) and log/report a stable,
+			// path-free message instead.
+			logger.Warn("webui: status could not load config")
+			return webui.Status{LastError: "config load failed (check -config path and file contents)"}
+		}
+		return webui.Status{AccountsNum: len(current.Accounts)}
+	}
+
+	srv, err := webui.New(webui.Options{
+		ConfigPath: *configPath,
+		AuthToken:  cfg.WebUI.AuthToken,
+		ListenAddr: cfg.WebUI.ListenAddr,
+		Sync:       syncNow,
+		Status:     statusFn,
+		Logger:     logger,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ui: %v\n", err)
+		os.Exit(1)
+	}
+
+	httpSrv := &http.Server{
+		Addr:              cfg.WebUI.ListenAddr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		// Bound the full request read (headers + body) so a slow client can't
+		// hold a connection open indefinitely trickling the body. The only
+		// body is a small JSON config (capped at 1MiB in the handler), so 30s
+		// is ample.
+		ReadTimeout: 30 * time.Second,
+		// Bound idle keep-alive connections. No short WriteTimeout on purpose:
+		// POST /api/sync runs a full sync pass inline (up to syncCycleTimeout),
+		// and a short write deadline would truncate a legitimate response.
+		IdleTimeout: 120 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutdownCtx)
+	}()
+
+	authNote := "no auth token set (loopback only)"
+	if cfg.WebUI.AuthToken != "" {
+		authNote = "auth token required"
+	}
+	logger.Info("serving configuration UI", "addr", cfg.WebUI.ListenAddr, "auth", authNote)
+	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		fmt.Fprintf(os.Stderr, "ui: server error: %v\n", err)
+		os.Exit(1)
 	}
 }
