@@ -132,3 +132,143 @@ block_title: "Do Not Disturb"
 		t.Errorf("BlockTitle = %q, want %q", cfg.BlockTitle, "Do Not Disturb")
 	}
 }
+
+const twoAccounts = `
+accounts:
+  - name: personal
+    credentials_file: a.json
+    token_file: a-tok.json
+    calendar_id: primary
+  - name: work
+    credentials_file: b.json
+    token_file: b-tok.json
+    calendar_id: primary
+`
+
+func TestLoad_WebhookEnabledAppliesDefaults(t *testing.T) {
+	path := writeTempConfig(t, twoAccounts+`
+webhook:
+  enabled: true
+  public_url: https://cb.example.com
+  verification_token: super-secret
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want nil", err)
+	}
+	if !cfg.Webhook.Enabled {
+		t.Fatal("Webhook.Enabled = false, want true")
+	}
+	if cfg.Webhook.ListenAddr != ":8080" {
+		t.Errorf("default ListenAddr = %q, want :8080", cfg.Webhook.ListenAddr)
+	}
+	if cfg.Webhook.ChannelTTL != "24h" {
+		t.Errorf("default ChannelTTL = %q, want 24h", cfg.Webhook.ChannelTTL)
+	}
+	if cfg.Webhook.DebounceInterval != "5s" {
+		t.Errorf("default DebounceInterval = %q, want 5s", cfg.Webhook.DebounceInterval)
+	}
+}
+
+func TestLoad_WebhookRequiresHTTPSPublicURL(t *testing.T) {
+	path := writeTempConfig(t, twoAccounts+`
+webhook:
+  enabled: true
+  public_url: http://insecure.example.com
+  verification_token: super-secret
+`)
+	if _, err := Load(path); err == nil {
+		t.Error("Load() error = nil, want error for non-https webhook.public_url")
+	}
+}
+
+func TestLoad_WebhookRequiresToken(t *testing.T) {
+	path := writeTempConfig(t, twoAccounts+`
+webhook:
+  enabled: true
+  public_url: https://cb.example.com
+`)
+	if _, err := Load(path); err == nil {
+		t.Error("Load() error = nil, want error for missing webhook.verification_token")
+	}
+}
+
+func TestLoad_WebhookRequiresPublicURL(t *testing.T) {
+	path := writeTempConfig(t, twoAccounts+`
+webhook:
+  enabled: true
+  verification_token: super-secret
+`)
+	if _, err := Load(path); err == nil {
+		t.Error("Load() error = nil, want error for missing webhook.public_url")
+	}
+}
+
+func TestLoad_WebhookDisabledSkipsValidation(t *testing.T) {
+	// A disabled webhook block with no fields must not trigger validation.
+	path := writeTempConfig(t, twoAccounts+`
+webhook:
+  enabled: false
+`)
+	if _, err := Load(path); err != nil {
+		t.Errorf("Load() error = %v, want nil (disabled webhook skips validation)", err)
+	}
+}
+
+func TestLoad_WebhookPublicURLValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"valid https", "https://cb.example.com", false},
+		{"valid https with path", "https://cb.example.com/hook", false},
+		{"http rejected", "http://cb.example.com", true},
+		{"missing host", "https://", true},
+		{"user info rejected", "https://user:pass@cb.example.com", true},
+		{"query rejected", "https://cb.example.com/?token=abc", true},
+		{"fragment rejected", "https://cb.example.com/#frag", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTempConfig(t, twoAccounts+"\nwebhook:\n  enabled: true\n  verification_token: secret\n  public_url: "+tc.url+"\n")
+			_, err := Load(path)
+			if tc.wantErr && err == nil {
+				t.Errorf("Load() error = nil, want error for public_url %q", tc.url)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Load() error = %v, want nil for public_url %q", err, tc.url)
+			}
+		})
+	}
+}
+
+func TestLoad_WebhookChannelTTLValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		ttl     string
+		wantErr bool
+	}{
+		{"unset uses default", "", false},
+		{"positive duration", "24h", false},
+		{"zero rejected", "0s", true},
+		{"negative rejected", "-1h", true},
+		{"invalid duration rejected", "not-a-duration", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := twoAccounts + "\nwebhook:\n  enabled: true\n  verification_token: secret\n  public_url: https://cb.example.com\n"
+			if tc.ttl != "" {
+				body += "  channel_ttl: " + tc.ttl + "\n"
+			}
+			path := writeTempConfig(t, body)
+			_, err := Load(path)
+			if tc.wantErr && err == nil {
+				t.Errorf("Load() error = nil, want error for channel_ttl %q", tc.ttl)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Load() error = %v, want nil for channel_ttl %q", err, tc.ttl)
+			}
+		})
+	}
+}

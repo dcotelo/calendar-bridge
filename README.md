@@ -36,9 +36,11 @@ control.
 
 - **Not** a full two-way mirror. Event content is never copied — only a
   generic "Busy" placeholder.
-- **Not** real-time. It polls on an interval (default 5 minutes), it does
-  not use Calendar API push notifications/webhooks (yet — see
-  [Roadmap](#roadmap)).
+- **Polling by default, not real-time.** It polls on an interval (default 5
+  minutes). Google Calendar API push notifications (webhooks) are available as
+  opt-in for near-instant propagation — see
+  [docs/webhooks.md](docs/webhooks.md) and the [Roadmap](#roadmap); polling
+  stays on as the safety net.
 - **Not** a replacement for genuine multi-calendar overlay views (Google's
   own "other calendars" sidebar already does that within one account).
 
@@ -218,25 +220,40 @@ always running.
 
 ## Known limitations
 
-- **Polling, not push.** A change on one calendar can take up to
-  `poll_interval` to propagate. Google Calendar API push notifications
-  (webhooks) would make this near-instant but add real infrastructure
-  requirements (a public HTTPS endpoint, channel renewal); tracked in
-  [Roadmap](#roadmap).
-- **No retry/backoff on transient API errors.** A single 429/5xx from the
-  Calendar API fails that account for the current pass; it's picked up
-  again next cycle. Fine at low poll frequency, but not ideal under load.
+- **Polling by default; push is opt-in.** A change on one calendar can take up
+  to `poll_interval` to propagate. Google Calendar API push notifications
+  (webhooks) make this near-instant but add real infrastructure requirements
+  (a public HTTPS endpoint, channel renewal), so they're opt-in via
+  `webhook.enabled` — see [docs/webhooks.md](docs/webhooks.md). With push on,
+  polling still runs as a safety net.
+- **Transient API errors are retried.** Transient 429/5xx responses and network
+  timeouts are retried with exponential backoff + full jitter
+  (`internal/sync.NewRetryingClient`); non-transient errors (auth, not-found)
+  fail fast. A persistently failing account is still excluded from the pass and
+  retried next cycle.
 - **Refresh tokens aren't re-persisted.** Google rarely rotates the refresh
   token for installed-app OAuth flows, so this is low-risk in practice, but
   if it ever issues a new one, the on-disk token file goes stale until you
   re-run `auth`.
-- **No interface abstraction over the Calendar API client** — resolved: `internal/sync.CalendarClient` is a small interface (list/find/insert/update/delete) that both the real Google-backed client and test fakes implement, so `SyncOnce` is covered end-to-end by fakes, not just its pure helper functions.
+- **Secret file permissions are warned, not enforced on read.** calendar-bridge
+  writes token files as `0600` and warns at startup if a credentials or token
+  file is group/world-readable, but it does not refuse to run — keep
+  `secrets/` owner-only.
+- **No interface abstraction over the Calendar API client** — resolved: `internal/sync.CalendarClient` is a small interface (list/find/insert/update/delete) that both the real Google-backed client and test fakes implement, so `SyncOnce` is covered end-to-end by fakes, not just its pure helper functions. A provider-neutral `Provider` interface (`internal/sync/provider.go`) layers on top to unblock non-Google backends.
 
 ## Roadmap
 
-- [ ] Google Calendar API push notifications (webhooks) as an alternative
-      to polling.
-- [ ] Retry with backoff on transient (429/5xx) API errors.
+- [x] Retry with backoff on transient (429/5xx) API errors — implemented as a
+      provider-agnostic decorator (`internal/sync.NewRetryingClient`) with
+      exponential backoff + full jitter.
+- [~] Google Calendar API push notifications (webhooks) as an alternative
+      to polling — opt-in scaffolding landed (`internal/webhook`, gated behind
+      `webhook.enabled`); see [docs/webhooks.md](docs/webhooks.md). Polling
+      remains the safety net.
+- [~] Provider abstraction to unblock non-Google backends (Outlook, iCloud) —
+      neutral `Provider` interface + model landed
+      (`internal/sync/provider.go`); Google adapter proves the seam. A concrete
+      Outlook/iCloud provider is the remaining work.
 - [x] Fakeable Calendar API client interface for full `SyncOnce` unit
       tests without live credentials.
 - [ ] Structured metrics (sync duration, blocks created/deleted per pass)

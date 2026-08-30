@@ -2,10 +2,12 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // CalendarClient is the minimal subset of the Google Calendar API that the
@@ -25,14 +27,22 @@ type CalendarClient interface {
 	// sourceEventKey private extended properties, or nil if none exists.
 	FindBlockBySource(ctx context.Context, calendarID, srcAccount, srcEventID string) (*calendar.Event, error)
 
+	// GetEvent returns the event with the given ID on calendarID, or nil if it
+	// does not exist. Used to re-verify a block's ownership tag immediately
+	// before deletion.
+	GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error)
+
 	// InsertEvent creates ev on calendarID.
 	InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error)
 
 	// UpdateEvent updates the event with the given ID on calendarID.
 	UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error)
 
-	// DeleteEvent deletes the event with the given ID on calendarID.
-	DeleteEvent(ctx context.Context, calendarID, eventID string) error
+	// DeleteEvent deletes the event with the given ID on calendarID. If
+	// ifMatchETag is non-empty, the delete is conditional on the event still
+	// matching that ETag (If-Match); a precondition failure surfaces as an
+	// error so the caller can re-verify rather than delete a changed event.
+	DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error
 }
 
 // googleCalendarClient adapts a real *calendar.Service to the CalendarClient
@@ -102,10 +112,26 @@ func (c *googleCalendarClient) InsertEvent(ctx context.Context, calendarID strin
 	return c.svc.Events.Insert(calendarID, ev).Context(ctx).Do()
 }
 
+func (c *googleCalendarClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
+	ev, err := c.svc.Events.Get(calendarID, eventID).Context(ctx).Do()
+	if err != nil {
+		var apiErr *googleapi.Error
+		if errors.As(err, &apiErr) && apiErr.Code == 404 {
+			return nil, nil // treat "gone" as no event, not an error
+		}
+		return nil, err
+	}
+	return ev, nil
+}
+
 func (c *googleCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
 	return c.svc.Events.Update(calendarID, eventID, ev).Context(ctx).Do()
 }
 
-func (c *googleCalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
-	return c.svc.Events.Delete(calendarID, eventID).Context(ctx).Do()
+func (c *googleCalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
+	call := c.svc.Events.Delete(calendarID, eventID).Context(ctx)
+	if ifMatchETag != "" {
+		call.Header().Set("If-Match", ifMatchETag)
+	}
+	return call.Do()
 }

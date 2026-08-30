@@ -277,6 +277,58 @@ func TestPutConfig_PreservesWebUIServerFields(t *testing.T) {
 	}
 }
 
+func TestPutConfig_PreservesWebhookBlock(t *testing.T) {
+	// Config with push notifications configured. The UI form has no fields
+	// for the webhook block at all, so a save from the browser must never
+	// wipe it out.
+	cfgYAML := validYAML + "\nwebhook:\n  enabled: true\n  public_url: https://cb.example.com\n" +
+		"  listen_addr: 127.0.0.1:8080\n  verification_token: secret-token\n" +
+		"  channel_ttl: 24h\n  debounce_interval: 5s\n"
+	path := writeConfig(t, cfgYAML)
+	srv := newTestServer(t, "", func(o *Options) { o.ConfigPath = path })
+
+	// Exactly what the browser's collectConfig sends: no "webhook" key.
+	body := `{"accounts":[
+	  {"name":"personal","credentials_file":"a.json","token_file":"a-tok.json","calendar_id":"primary"},
+	  {"name":"work","credentials_file":"b.json","token_file":"b-tok.json","calendar_id":"primary"}
+	],"poll_interval":"5m","lookahead_days":30,"block_title":"Busy","web_ui":{"auth_token":""}}`
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodPut, "/api/config", "", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	reloaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reloaded.Webhook.Enabled {
+		t.Error("webhook.enabled was wiped by a UI save; want it preserved (true)")
+	}
+	if reloaded.Webhook.VerificationToken != "secret-token" {
+		t.Errorf("webhook.verification_token = %q, want secret-token (preserved)", reloaded.Webhook.VerificationToken)
+	}
+	if reloaded.Webhook.PublicURL != "https://cb.example.com" {
+		t.Errorf("webhook.public_url = %q, want preserved", reloaded.Webhook.PublicURL)
+	}
+}
+
+func TestGetConfig_RedactsWebhookVerificationToken(t *testing.T) {
+	cfgYAML := validYAML + "\nwebhook:\n  enabled: true\n  public_url: https://cb.example.com\n" +
+		"  listen_addr: 127.0.0.1:8080\n  verification_token: secret-token\n"
+	path := writeConfig(t, cfgYAML)
+	srv := newTestServer(t, "", func(o *Options) { o.ConfigPath = path })
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodGet, "/api/config", "", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "secret-token") {
+		t.Error("GET /api/config leaked webhook.verification_token; want it redacted")
+	}
+}
+
 func TestSync_RejectsConcurrent(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{})

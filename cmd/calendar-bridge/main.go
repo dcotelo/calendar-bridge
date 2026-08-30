@@ -9,15 +9,22 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
+	stdsync "sync"
 	"syscall"
 	"time"
+
+	calendar "google.golang.org/api/calendar/v3"
 
 	"github.com/dcotelo/calendar-bridge/internal/config"
 	"github.com/dcotelo/calendar-bridge/internal/googleauth"
 	"github.com/dcotelo/calendar-bridge/internal/sync"
+	"github.com/dcotelo/calendar-bridge/internal/webhook"
 	"github.com/dcotelo/calendar-bridge/internal/webui"
 )
 
@@ -119,17 +126,24 @@ func runAuth(args []string) {
 	}
 }
 
-func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*sync.Engine, error) {
+func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*sync.Engine, map[string]*calendar.Service, error) {
 	accounts := make([]sync.Account, 0, len(cfg.Accounts))
+	services := make(map[string]*calendar.Service, len(cfg.Accounts))
 	for _, a := range cfg.Accounts {
-		svc, err := googleauth.Client(ctx, a.CredentialsFile, a.TokenFile)
+		svc, err := googleauth.Client(ctx, a.CredentialsFile, a.TokenFile, logger)
 		if err != nil {
-			return nil, fmt.Errorf("account %s: %w", a.Name, err)
+			return nil, nil, fmt.Errorf("account %s: %w", a.Name, err)
 		}
+		services[a.Name] = svc
 		accounts = append(accounts, sync.Account{
 			Name:       a.Name,
 			CalendarID: a.CalendarID,
-			Client:     sync.NewGoogleCalendarClient(svc),
+			Client: sync.NewRetryingClient(
+				sync.NewGoogleCalendarClient(svc),
+				sync.DefaultRetryPolicy(),
+				logger,
+				a.Name,
+			),
 		})
 	}
 
@@ -138,7 +152,7 @@ func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		BlockTitle:    cfg.BlockTitle,
 		LookaheadDays: cfg.LookaheadDays,
 		Logger:        logger,
-	}, nil
+	}, services, nil
 }
 
 func runSyncOnce(args []string) {
@@ -149,7 +163,7 @@ func runSyncOnce(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	engine, err := buildEngine(ctx, cfg, logger)
+	engine, _, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "setting up: %v\n", err)
 		os.Exit(1)
@@ -181,7 +195,7 @@ func runSync(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	engine, err := buildEngine(ctx, cfg, logger)
+	engine, services, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "setting up: %v\n", err)
 		os.Exit(1)
@@ -193,11 +207,35 @@ func runSync(args []string) {
 		os.Exit(1)
 	}
 
-	logger.Info("starting sync loop", "interval", interval, "accounts", len(cfg.Accounts))
+	// Optional push path: when webhook is enabled, start the receiver and the
+	// watch-channel manager. Push notifications trigger the same SyncOnce as
+	// polling — polling stays on as a safety net so a missed/late notification
+	// never means a permanently-missed change.
+	var pushTrigger <-chan struct{}
+	waitWebhook := func() {}
+	if cfg.Webhook.Enabled {
+		trigger, wait, err := startWebhook(ctx, cfg, services, logger)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "starting webhook: %v\n", err)
+			os.Exit(1)
+		}
+		pushTrigger = trigger
+		waitWebhook = wait
+		// Log only the scheme://host origin, never the full URL: a public_url
+		// may carry a non-root path we shouldn't echo into shared logs.
+		origin := cfg.Webhook.PublicURL
+		if u, err := url.Parse(cfg.Webhook.PublicURL); err == nil && u.Host != "" {
+			origin = u.Scheme + "://" + u.Host
+		}
+		logger.Info("push notifications enabled", "listen", cfg.Webhook.ListenAddr, "public_url_origin", origin)
+	}
+
+	logger.Info("starting sync loop", "interval", interval, "accounts", len(cfg.Accounts), "push", cfg.Webhook.Enabled)
 	for {
 		select {
 		case <-ctx.Done():
 			logger.Info("received shutdown signal, exiting")
+			waitWebhook()
 			return
 		default:
 		}
@@ -211,13 +249,102 @@ func runSync(args []string) {
 			logger.Info("sync pass complete")
 		}
 
+		// Wait for the next trigger: a poll tick, a debounced push
+		// notification, or shutdown — whichever comes first.
 		select {
 		case <-ctx.Done():
 			logger.Info("received shutdown signal, exiting")
+			waitWebhook()
 			return
+		case <-pushTrigger:
+			logger.Info("sync triggered by push notification")
 		case <-time.After(interval):
 		}
 	}
+}
+
+// startWebhook starts the push-notification receiver HTTP server and the
+// watch-channel manager, returning a channel that fires (debounced) whenever a
+// calendar change notification arrives, and a wait function that blocks until
+// both the server and the manager have finished shutting down. Both stop when
+// ctx is cancelled; the caller must call wait before the process exits, or
+// Google may keep POSTing to a callback whose process has already gone away
+// and watch channels may be left registered.
+func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*calendar.Service, logger *slog.Logger) (trigger <-chan struct{}, wait func(), err error) {
+	debounceInterval, err := time.ParseDuration(cfg.Webhook.DebounceInterval)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid webhook.debounce_interval %q: %w", cfg.Webhook.DebounceInterval, err)
+	}
+	// Empty channel_ttl means "use the provider default" (ttl == 0); only parse
+	// a non-empty value, since time.ParseDuration("") errors.
+	var ttl time.Duration
+	if cfg.Webhook.ChannelTTL != "" {
+		ttl, err = time.ParseDuration(cfg.Webhook.ChannelTTL)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid webhook.channel_ttl %q: %w", cfg.Webhook.ChannelTTL, err)
+		}
+	}
+
+	debouncer := webhook.NewDebouncer(debounceInterval)
+	receiver := webhook.NewReceiver(cfg.Webhook.VerificationToken, debouncer, logger)
+
+	mux := http.NewServeMux()
+	mux.Handle("/webhook", receiver)
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		// The endpoint is publicly reachable; bound how long a stalled
+		// client can hold a connection/goroutine open.
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	// Bind synchronously so a failure (e.g. the port is already in use) is
+	// reported to the caller instead of being swallowed in a goroutine — which
+	// would otherwise leave the process polling and registering Google watch
+	// channels whose callbacks can never be delivered.
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", cfg.Webhook.ListenAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("binding webhook listener on %s: %w", cfg.Webhook.ListenAddr, err)
+	}
+
+	var wg stdsync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("webhook server stopped", "error", err)
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-ctx.Done()
+		// ctx is already cancelled (that's what unblocked us); derive a fresh
+		// context that ignores that cancellation so Shutdown gets the full
+		// grace period to drain instead of aborting immediately.
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	// Watch-channel manager: register/renew a channel per account calendar.
+	watcher := webhook.NewGoogleWatcher(services)
+	callbackURL := strings.TrimRight(cfg.Webhook.PublicURL, "/") + "/webhook"
+	mgr := webhook.NewManager(watcher, callbackURL, cfg.Webhook.VerificationToken, ttl, logger)
+
+	targets := make([]webhook.Target, 0, len(cfg.Accounts))
+	for _, a := range cfg.Accounts {
+		targets = append(targets, webhook.Target{Account: a.Name, CalendarID: a.CalendarID})
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = mgr.Run(ctx, targets)
+	}()
+
+	return debouncer.C, wg.Wait, nil
 }
 
 func runUI(args []string) {
@@ -253,7 +380,7 @@ func runUI(args []string) {
 		if err != nil {
 			return fmt.Errorf("reloading config: %w", err)
 		}
-		engine, err := buildEngine(syncCtx, current, logger)
+		engine, _, err := buildEngine(syncCtx, current, logger)
 		if err != nil {
 			return fmt.Errorf("setting up sync: %w", err)
 		}

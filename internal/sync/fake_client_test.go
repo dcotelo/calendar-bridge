@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	stdsync "sync"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // fakeCalendarClient is an in-memory CalendarClient used to exercise
@@ -27,6 +29,7 @@ type fakeCalendarClient struct {
 	failInsert error
 	failUpdate error
 	failDelete error
+	failGet    error
 }
 
 func newFakeCalendarClient() *fakeCalendarClient {
@@ -113,6 +116,15 @@ func (f *fakeCalendarClient) FindBlockBySource(ctx context.Context, calendarID, 
 	return nil, nil
 }
 
+func (f *fakeCalendarClient) GetEvent(ctx context.Context, calendarID, eventID string) (*calendar.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failGet != nil {
+		return nil, f.failGet
+	}
+	return f.events[eventID], nil // nil if absent, matching the real client's 404->nil
+}
+
 func (f *fakeCalendarClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -139,14 +151,23 @@ func (f *fakeCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventI
 	return ev, nil
 }
 
-func (f *fakeCalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID string) error {
+func (f *fakeCalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failDelete != nil {
 		return f.failDelete
 	}
-	if _, ok := f.events[eventID]; !ok {
+	ev, ok := f.events[eventID]
+	if !ok {
 		return fmt.Errorf("fake: event %s not found", eventID)
+	}
+	// Model the real API's conditional delete: an If-Match that doesn't match
+	// the event's current ETag fails its precondition (412) rather than
+	// silently deleting, so a caller that deletes with a stale ETag is caught
+	// here instead of only in production. A blank ETag on either side (a
+	// caller/fixture that doesn't model ETags at all) is treated as a match.
+	if ifMatchETag != "" && ev.Etag != "" && ifMatchETag != ev.Etag {
+		return &googleapi.Error{Code: http.StatusPreconditionFailed}
 	}
 	delete(f.events, eventID)
 	return nil

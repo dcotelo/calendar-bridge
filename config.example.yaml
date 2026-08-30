@@ -24,9 +24,26 @@ poll_interval: 5m
 lookahead_days: 30
 block_title: "Busy (calendar-bridge)"
 
+# Optional: near-real-time sync via Google Calendar push notifications
+# (events.watch). Opt-in — leave disabled to poll only (the default). Requires
+# a publicly reachable HTTPS endpoint routing to listen_addr. See docs/webhooks.md.
+#
+# webhook:
+#   enabled: true
+#   public_url: https://cb.example.com   # must be https; receiver lives at /webhook
+#   listen_addr: "127.0.0.1:8080"        # loopback, behind a TLS-terminating proxy on
+#                                        # the same host; if the proxy runs elsewhere
+#                                        # (e.g. a separate container), bind the address
+#                                        # it reaches and isolate the port at the network
+#                                        # level instead — never expose plaintext HTTP
+#   verification_token: "CHANGE-ME-long-random-secret"  # secret; authenticates notifications
+#   channel_ttl: "24h"                   # watch channel lifetime; renewed ahead of expiry
+#   debounce_interval: "5s"              # coalesce a burst of changes into one sync
+
 # Optional: local configuration web UI (see docs/web-ui.md). Off by default.
-# Loopback-only unless you set auth_token; the UI never exposes credential or
-# token file contents to the browser. Run with: calendar-bridge ui
+# Loopback only — non-loopback binds are refused unconditionally, auth_token
+# notwithstanding; the UI never exposes credential or token file contents to
+# the browser. Run with: calendar-bridge ui
 #
 # web_ui:
 #   enabled: true

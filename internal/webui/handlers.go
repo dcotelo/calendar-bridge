@@ -26,19 +26,21 @@ func (s *Server) writeError(w http.ResponseWriter, status int, msg string) {
 //
 // Note on safety: the Config struct contains only account metadata and file
 // PATHS (credentials_file, token_file) — never the credential contents. So
-// returning it verbatim does not expose OAuth secrets. The one sensitive field
-// is web_ui.auth_token; it is redacted before sending.
+// returning it verbatim does not expose OAuth secrets. The sensitive fields
+// are web_ui.auth_token and webhook.verification_token; both are redacted
+// before sending.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := config.Load(s.configPath)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "loading config: "+err.Error())
 		return
 	}
-	// Redact the auth token: the browser doesn't need it back, and echoing it
-	// would widen its exposure. An empty value on PUT means "leave unchanged".
-	if cfg.WebUI.AuthToken != "" {
-		cfg.WebUI.AuthToken = ""
-	}
+	// Redact both secrets: the browser doesn't need them back, and echoing
+	// them would widen their exposure. An empty value on PUT means "leave
+	// unchanged" for auth_token; the UI never sends a webhook block at all,
+	// so handlePutConfig always carries the existing one forward.
+	cfg.WebUI.AuthToken = ""
+	cfg.Webhook.VerificationToken = ""
 	s.writeJSON(w, http.StatusOK, cfg)
 }
 
@@ -64,9 +66,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The browser form only edits account/sync fields, not the web_ui server
-	// settings. Carry the existing web_ui fields forward when the client omits
-	// them (zero value = "unchanged"), so saving from the UI can never disable
-	// the UI or wipe its listen address / auth token and lock the operator out.
+	// settings or the webhook block at all. Carry the existing web_ui fields
+	// forward when the client omits them (zero value = "unchanged"), so
+	// saving from the UI can never disable the UI or wipe its listen address
+	// / auth token and lock the operator out; carry the whole webhook block
+	// forward whenever the client sends none of it, so a UI save can never
+	// silently disable push notifications or blank the verification token.
 	// If the existing config can't be loaded, refuse rather than persist a
 	// payload missing those fields (which would set enabled:false / empty addr).
 	existing, err := config.Load(s.configPath)
@@ -82,6 +87,9 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if incoming.WebUI.ListenAddr == "" {
 		incoming.WebUI.ListenAddr = existing.WebUI.ListenAddr
+	}
+	if incoming.Webhook == (config.Webhook{}) {
+		incoming.Webhook = existing.Webhook
 	}
 
 	// Save validates first and writes atomically at 0600; an invalid config is
