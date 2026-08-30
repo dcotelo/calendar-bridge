@@ -9,6 +9,8 @@ import (
 )
 
 func TestExtractAuthCode(t *testing.T) {
+	const wantState = "test-state-value"
+
 	cases := []struct {
 		name    string
 		input   string
@@ -31,9 +33,28 @@ func TestExtractAuthCode(t *testing.T) {
 			want:  "4/0AVGzR1abcXYZ123",
 		},
 		{
-			name:  "https redirect URL",
-			input: "https://localhost/?state=state-token&code=abc123&scope=foo\n",
+			name:  "https redirect URL with matching state",
+			input: "https://localhost/?state=test-state-value&code=abc123&scope=foo\n",
 			want:  "abc123",
+		},
+		{
+			// A URL with no state at all is still accepted: some clients omit
+			// it on the redirect, and the bare-code path has no state either.
+			name:  "redirect URL with no state parameter",
+			input: "https://localhost/?code=abc123&scope=foo\n",
+			want:  "abc123",
+		},
+		{
+			// The swapped-authorization shape: a code from someone else's
+			// consent, which would bind calendar-bridge to their calendar.
+			name:    "redirect URL with mismatched state is refused",
+			input:   "https://localhost/?state=attacker-state&code=abc123&scope=foo\n",
+			wantErr: true,
+		},
+		{
+			name:    "redirect URL carrying an error parameter",
+			input:   "https://localhost/?error=access_denied&state=test-state-value\n",
+			wantErr: true,
 		},
 		{
 			name:  "surrounding whitespace",
@@ -59,7 +80,7 @@ func TestExtractAuthCode(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := extractAuthCode(tc.input)
+			got, err := extractAuthCode(tc.input, wantState)
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("extractAuthCode(%q) error = nil, want error", tc.input)

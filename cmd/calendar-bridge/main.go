@@ -155,6 +155,20 @@ func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 	}, services, nil
 }
 
+// reportSetupError prints a setup failure with an actionable next step for the
+// two causes an operator can actually fix themselves, rather than only the
+// wrapped error text.
+func reportSetupError(err error) {
+	fmt.Fprintf(os.Stderr, "setting up: %v\n", err)
+	switch {
+	case errors.Is(err, googleauth.ErrNeedsAuth):
+		fmt.Fprintln(os.Stderr, "\nRun the authorization flow for that account:\n  calendar-bridge auth -config <config.yaml> -account <name>")
+	case errors.Is(err, googleauth.ErrTokenUnreadable):
+		fmt.Fprintln(os.Stderr, "\nThe token file is present but corrupt (an interrupted write, or hand-edited).\n"+
+			"Delete it and re-run the authorization flow:\n  calendar-bridge auth -config <config.yaml> -account <name>")
+	}
+}
+
 func runSyncOnce(args []string) {
 	fs := flag.NewFlagSet("sync-once", flag.ExitOnError)
 	cfg := loadConfig(fs, args)
@@ -165,7 +179,7 @@ func runSyncOnce(args []string) {
 
 	engine, _, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "setting up: %v\n", err)
+		reportSetupError(err)
 		os.Exit(1)
 	}
 
@@ -197,7 +211,7 @@ func runSync(args []string) {
 
 	engine, services, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "setting up: %v\n", err)
+		reportSetupError(err)
 		os.Exit(1)
 	}
 
