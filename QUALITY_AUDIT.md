@@ -720,7 +720,7 @@ The matrix above described the state at audit time. Current state:
 | 11 — insert idempotency | Covered | Covered |
 | 12 — no content propagation | Implicit | Covered explicitly on both paths, plus a fuzz target |
 
-**6 of 17 fully covered → 17 of 17.** Plus four fuzz targets and an
+**6 of 19 fully covered → 19 of 19.** Plus four fuzz targets and an
 `httptest` double exercising the real Google client, which had none.
 
 ### Numbers
