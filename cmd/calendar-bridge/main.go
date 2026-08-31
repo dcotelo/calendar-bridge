@@ -584,9 +584,10 @@ func runUI(args []string) {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		// config.Load embeds the path in its error; keep it out of stderr
-		// (shared logs) and emit a stable message. The operator knows the path
-		// they passed via -config.
+		// The message is deliberately stable and path-free: stderr is a
+		// shared log (the journal under systemd, `docker logs` under Docker)
+		// and the operator already knows the path they passed via -config.
+		// config.Load is itself path-free, so this is belt-and-braces.
 		fmt.Fprintln(os.Stderr, "ui: failed to load config (check -config path and file contents)")
 		os.Exit(exitConfig)
 	}
@@ -628,10 +629,10 @@ func runUI(args []string) {
 	statusFn := func() webui.Status {
 		current, err := config.Load(*configPath)
 		if err != nil {
-			// config.Load embeds the config path in its error text; keep that
-			// out of both the shared log and the reported status (this runs
-			// on every page load, sync, and reload) and log/report a stable,
-			// path-free message instead.
+			// Keep the path out of both the shared log and the reported
+			// status — this runs on every page load, sync and reload, and
+			// the status is rendered in a browser. config.Load is itself
+			// path-free, so this is belt-and-braces.
 			logger.Warn("webui: status could not load config")
 			return webui.Status{LastError: "config load failed (check -config path and file contents)"}
 		}
