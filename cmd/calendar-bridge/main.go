@@ -73,8 +73,6 @@ func main() {
 	}
 }
 
-// usage writes the help text. A failed write to stdout or stderr has no
-// useful recovery, so the error is deliberately ignored.
 // parseFlags parses args, routing an explicit help request to STDOUT with exit
 // 0 and any other parse error to STDERR with exit 2.
 //
@@ -121,6 +119,8 @@ func parseFlags(fs *flag.FlagSet, args []string) {
 	}
 }
 
+// usage writes the help text. A failed write to stdout or stderr has no
+// useful recovery, so the error is deliberately ignored.
 func usage(w io.Writer) {
 	_, _ = fmt.Fprint(w, `calendar-bridge - self-hosted busy-time sync across Google Calendar accounts
 
@@ -164,11 +164,17 @@ Docs: https://github.com/dcotelo/calendar-bridge
 `)
 }
 
-func loadConfig(fs *flag.FlagSet, args []string) *config.Config {
+// parseAndLoad parses args and loads the config, returning the error rather
+// than exiting. Callers that need to emit something before dying (sync-once
+// with -json) use this; the rest use loadConfig.
+func parseAndLoad(fs *flag.FlagSet, args []string) (*config.Config, error) {
 	configPath := fs.String("config", "config.yaml", "path to config file")
 	parseFlags(fs, args)
+	return config.Load(*configPath)
+}
 
-	cfg, err := config.Load(*configPath)
+func loadConfig(fs *flag.FlagSet, args []string) *config.Config {
+	cfg, err := parseAndLoad(fs, args)
 	if err != nil {
 		// The error is deliberately dropped rather than printed. This is a
 		// daemon path — under systemd stderr is the journal, under Docker it
@@ -324,6 +330,30 @@ type passReport struct {
 	Failed      []string `json:"failed_accounts,omitempty"`
 }
 
+// emitFailureReport writes the -json object for a failure that happened before
+// a sync pass could run, so stdout still carries exactly one decodable object.
+//
+// The counts are zero and the duration is zero because no pass took place —
+// that is the honest report, and it is distinguishable from a pass that ran
+// and changed nothing by OK being false with a non-empty error.
+//
+// err is safe to include: config.Load and the googleauth setup errors are
+// path-free by construction, which their own tests assert.
+func emitFailureReport(dryRun bool, err error) {
+	rep := passReport{
+		Version:   versionString(),
+		DryRun:    dryRun,
+		OK:        false,
+		Error:     err.Error(),
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if encErr := enc.Encode(rep); encErr != nil {
+		fmt.Fprintf(os.Stderr, "writing JSON report: %v\n", encErr)
+	}
+}
+
 // wasInterrupted reports whether a failed pass was cut short by SIGINT/SIGTERM
 // rather than by a genuine error. syncErr is what SyncOnce returned; ctxErr is
 // the state of the *signal* context (not the per-cycle timeout context).
@@ -349,7 +379,7 @@ func runSyncOnce(args []string) {
 	fs := flag.NewFlagSet("sync-once", flag.ContinueOnError)
 	dryRun := fs.Bool("dry-run", false, "report what would change without writing to any calendar")
 	asJSON := fs.Bool("json", false, "emit the pass result as JSON on stdout")
-	cfg := loadConfig(fs, args)
+	cfg, cfgErr := parseAndLoad(fs, args)
 
 	// With -json, stdout carries exactly one JSON object; logs go to stderr so
 	// the output stays machine-readable.
@@ -358,12 +388,33 @@ func runSyncOnce(args []string) {
 		logDest = os.Stderr
 	}
 	logger := slog.New(slog.NewTextHandler(logDest, nil))
+
+	// A -json consumer gets a decodable object on EVERY exit, including the
+	// two that happen before a pass can start. Emitting nothing on the most
+	// common failures — an unreadable config, an account that needs
+	// authorization — forces the consumer to parse stderr or infer from the
+	// exit code alone.
+	if cfgErr != nil {
+		reportConfigError()
+		if *asJSON {
+			emitFailureReport(*dryRun, cfgErr)
+		}
+		os.Exit(exitConfig)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	engine, _, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
-		os.Exit(reportSetupError(err))
+		// reportSetupError writes the operator-facing guidance to stderr and
+		// classifies the exit code; the JSON object is the machine-facing
+		// half of the same failure.
+		code := reportSetupError(err)
+		if *asJSON {
+			emitFailureReport(*dryRun, err)
+		}
+		os.Exit(code)
 	}
 	engine.DryRun = *dryRun
 
