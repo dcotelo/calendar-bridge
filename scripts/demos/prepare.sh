@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
 # Builds the binary and a synthetic fixture for the VHS demos.
-# Called by each .tape via its Setup block.
+#
+# Invoked by `make demos` before vhs runs. It is NOT called from the tapes:
+# each tape's `Require calendar-bridge` is evaluated when the tape starts, so
+# the binary has to exist and be on PATH before vhs is invoked at all.
 
 set -euo pipefail
 cd "$(dirname "$0")/../.."
