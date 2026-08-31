@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -359,5 +360,36 @@ func TestLoad_RejectsAnOversizedConfigWithoutParsingIt(t *testing.T) {
 	// And the error must stay path-free like every other Load error.
 	if strings.Contains(err.Error(), dir) {
 		t.Errorf("error discloses the config directory: %v", err)
+	}
+}
+
+// The read must be BOUNDED, not read-then-check: a runaway file has to be
+// rejected without allocating all of it.
+func TestLoad_DoesNotAllocateAnOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	// 64 MiB — enough that a full read is unmistakable in the heap delta.
+	const size = 64 << 20
+	if err := os.WriteFile(path, []byte(strings.Repeat("k: v\n", size/5)), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load accepted an oversized config")
+	}
+
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("file %d MiB, allocated during Load: %d KiB", size>>20, allocated>>10)
+
+	// Generous ceiling: the bound is 1 MiB, so anything near the file size
+	// means the whole thing was read in.
+	if allocated > 8<<20 {
+		t.Errorf("Load allocated %d MiB for a %d MiB file; the read is not bounded", allocated>>20, size>>20)
 	}
 }

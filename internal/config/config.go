@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/url"
@@ -173,7 +174,7 @@ const maxConfigBytes = 1 << 20 // 1 MiB
 func Load(path string) (*Config, error) {
 	// #nosec G304 -- path is an explicit CLI flag the operator passes to
 	// their own calendar-bridge invocation, not untrusted external input.
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		// Path-free: this error reaches the daemon's stderr, which under
 		// systemd is the journal and under Docker the container log. The
@@ -182,8 +183,18 @@ func Load(path string) (*Config, error) {
 		// format string, so its cause is stripped too.
 		return nil, fmt.Errorf("reading config file: %w", pathFree(err))
 	}
+	defer func() { _ = f.Close() }()
+
+	// Read at most one byte past the limit, rather than os.ReadFile followed by
+	// a length check: ReadFile allocates the WHOLE file first, so a huge or
+	// runaway file would exhaust memory before the check could reject it. The
+	// extra byte is what makes "at the limit" distinguishable from "over it".
+	data, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading config file: %w", pathFree(err))
+	}
 	if len(data) > maxConfigBytes {
-		return nil, fmt.Errorf("config file is %d bytes, over the %d-byte limit; this is not a calendar-bridge config", len(data), maxConfigBytes)
+		return nil, fmt.Errorf("config file exceeds the %d-byte limit; this is not a calendar-bridge config", maxConfigBytes)
 	}
 	return loadBytes(data)
 }
