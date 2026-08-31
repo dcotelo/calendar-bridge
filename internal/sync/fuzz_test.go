@@ -78,6 +78,19 @@ func FuzzSourceIdentity(f *testing.F) {
 		if isOwnedBlock(back) != owned {
 			t.Fatalf("ownership flipped across a neutral-model round trip (%v -> %v)", owned, isOwnedBlock(back))
 		}
+		// Ownership alone is not enough. A conversion that dropped the source
+		// calendar or source event tag would keep ownership stable and pass
+		// the check above, while destroying the identity GC matches a block
+		// back to its source by — producing exactly the uncollectable orphan
+		// the write gate above exists to prevent.
+		wantAcct, wantCal, wantEvt, wantOK := sourceIdentity(ev)
+		gotAcct, gotCal, gotEvt, gotOK := sourceIdentity(back)
+		if wantOK != gotOK || wantAcct != gotAcct || wantCal != gotCal || wantEvt != gotEvt {
+			t.Fatalf("source identity changed across a neutral-model round trip:\n"+
+				" before: account=%q calendar=%q event=%q ok=%v\n"+
+				" after:  account=%q calendar=%q event=%q ok=%v",
+				wantAcct, wantCal, wantEvt, wantOK, gotAcct, gotCal, gotEvt, gotOK)
+		}
 	})
 }
 
