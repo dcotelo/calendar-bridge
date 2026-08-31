@@ -53,9 +53,13 @@ jobs:
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
-          # Pinned rather than "latest": goreleaser produces the artifacts
-          # people install, so an unreviewed upgrade lands in the release path.
-          version: "~> v2.12"
+          # An EXACT version, not a range. "~> v2.12" is a semver constraint
+          # that resolves to the newest v2.12.x at run time, so a new patch
+          # release could change the artifacts people install without any
+          # change to this workflow — which is the opposite of what pinning is
+          # for. This version is the one the release-config job validates on
+          # every pull request.
+          version: "2.12.7"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
