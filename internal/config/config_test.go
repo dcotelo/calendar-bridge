@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,8 +98,54 @@ accounts:
 }
 
 func TestLoad_FileNotFound(t *testing.T) {
-	if _, err := Load("/nonexistent/config.yaml"); err == nil {
-		t.Error("Load() error = nil, want error for missing config file")
+	// A distinctive directory, so any leak of the supplied path is unambiguous.
+	dir := filepath.Join(t.TempDir(), "cOnFiGdIrThAtMuStNoTlEaK")
+	missing := filepath.Join(dir, "config.yaml")
+
+	cfg, err := Load(missing)
+	if err == nil {
+		t.Fatal("Load() error = nil, want error for missing config file")
+	}
+	// A failed Load must never hand back a partially-populated config: a caller
+	// that ignored the error would otherwise run against defaults and no
+	// accounts.
+	if cfg != nil {
+		t.Errorf("Load() returned a config (%+v) alongside an error; it must be nil", cfg)
+	}
+	// Load's error reaches the daemon's stderr, which under systemd is the
+	// journal. The wrapped *fs.PathError embeds the full path regardless of the
+	// format string, so this guards the stripping as well as the message.
+	if strings.Contains(err.Error(), dir) {
+		t.Errorf("Load() error discloses the config directory: %v", err)
+	}
+}
+
+// Every Load failure mode must stay path-free, not just the missing-file one.
+func TestLoad_ErrorsNeverContainTheSuppliedPath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "aNoThErCoNfIgDiR")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cases := map[string]string{
+		"unparseable YAML":              "accounts: [oops\n",
+		"valid YAML but invalid config": "accounts: []\n",
+		"wrong types":                   "accounts: 42\n",
+	}
+	for name, contents := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(p, []byte(contents), 0o600); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			_, err := Load(p)
+			if err == nil {
+				t.Fatalf("Load accepted %q", contents)
+			}
+			if strings.Contains(err.Error(), dir) {
+				t.Errorf("error discloses the config directory: %v", err)
+			}
+		})
 	}
 }
 

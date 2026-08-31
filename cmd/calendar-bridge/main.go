@@ -5,9 +5,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -33,10 +35,20 @@ import (
 // sync duration (seconds, even for many accounts/events) but still finite.
 const syncCycleTimeout = 5 * time.Minute
 
+// Exit codes. Documented so scripts and supervisors can branch on them.
+const (
+	exitOK          = 0
+	exitUsage       = 2 // bad flags, unknown command, missing required argument
+	exitConfig      = 3 // config file missing, unparseable, or invalid
+	exitAuth        = 4 // an account is unauthorized, or its token is unreadable
+	exitSyncFailure = 5 // the pass ran but at least one account or write failed
+	exitRuntime     = 6 // could not start (port in use, listener refused, etc.)
+)
+
 func main() {
 	if len(os.Args) < 2 {
-		usage()
-		os.Exit(1)
+		usage(os.Stderr)
+		os.Exit(exitUsage)
 	}
 
 	switch os.Args[1] {
@@ -48,63 +60,159 @@ func main() {
 		runSyncOnce(os.Args[2:])
 	case "ui":
 		runUI(os.Args[2:])
+	case "version", "-version", "--version":
+		printVersion(os.Stdout)
 	case "-h", "--help", "help":
-		usage()
+		// Asked-for help is output, not an error: stdout, exit 0, so
+		// `calendar-bridge --help | less` works.
+		usage(os.Stdout)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
-		usage()
-		os.Exit(1)
+		usage(os.Stderr)
+		os.Exit(exitUsage)
 	}
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `calendar-bridge - self-hosted busy-time sync across Google Calendar accounts
+// parseFlags parses args, routing an explicit help request to STDOUT with exit
+// 0 and any other parse error to STDERR with exit 2.
+//
+// flag.ExitOnError sends -h output to stderr and exits 0, which makes
+// `calendar-bridge sync-once -h | less` show nothing. The obvious fix — scan
+// args for -h before parsing — is wrong: it would accept `sync-once -bogus -h`
+// and print help, when the flag package's left-to-right parse should fail on
+// -bogus first. ContinueOnError keeps that ordering exactly and lets the
+// destination be chosen per outcome.
+func parseFlags(fs *flag.FlagSet, args []string) {
+	// Suppress the package's own printing; the error paths below choose the
+	// stream and the message.
+	fs.SetOutput(io.Discard)
+
+	err := fs.Parse(args)
+	switch {
+	case err == nil:
+		// Parse stops at the first non-flag argument and leaves the rest in
+		// Args(). No subcommand takes positional arguments — auth names its
+		// account with -account — so anything left is a typo, and silently
+		// ignoring it is dangerous rather than merely untidy: in
+		// `sync-once typo -dry-run` the parse stops at typo, -dry-run is
+		// never seen, and a real sync writes to live calendars when the
+		// operator asked for a dry run.
+		if rest := fs.Args(); len(rest) > 0 {
+			fs.SetOutput(os.Stderr)
+			_, _ = fmt.Fprintf(os.Stderr,
+				"%s: unexpected argument %q\n\nUsage of %s:\n", fs.Name(), rest[0], fs.Name())
+			fs.PrintDefaults()
+			os.Exit(exitUsage)
+		}
+		return
+	case errors.Is(err, flag.ErrHelp):
+		// Asked-for help is output, not an error.
+		fs.SetOutput(os.Stdout)
+		_, _ = fmt.Fprintf(os.Stdout, "Usage of %s:\n", fs.Name())
+		fs.PrintDefaults()
+		os.Exit(exitOK)
+	default:
+		fs.SetOutput(os.Stderr)
+		_, _ = fmt.Fprintf(os.Stderr, "%s: %v\n\nUsage of %s:\n", fs.Name(), err, fs.Name())
+		fs.PrintDefaults()
+		os.Exit(exitUsage)
+	}
+}
+
+// usage writes the help text. A failed write to stdout or stderr has no
+// useful recovery, so the error is deliberately ignored.
+func usage(w io.Writer) {
+	_, _ = fmt.Fprint(w, `calendar-bridge - self-hosted busy-time sync across Google Calendar accounts
 
 Usage:
   calendar-bridge auth -config config.yaml -account <name>
       Run the interactive OAuth2 flow for one account and cache its token.
+      Do this once per account, on a machine with a browser, before `+"`run`"+`.
 
-  calendar-bridge sync-once -config config.yaml
-      Run a single sync pass and exit. Useful for cron/testing.
+  calendar-bridge sync-once [-config config.yaml] [-dry-run] [-json]
+      Run a single sync pass and exit. Useful for cron, and for checking a
+      config before leaving it running.
 
-  calendar-bridge run -config config.yaml
+  calendar-bridge run [-config config.yaml] [-dry-run]
       Run the sync loop continuously, polling at the configured interval.
+      Exits cleanly on SIGINT/SIGTERM.
 
-  calendar-bridge ui -config config.yaml
-      Serve the local configuration web UI (loopback-only by default; set
-      web_ui.auth_token to expose it with authentication).
+  calendar-bridge ui [-config config.yaml]
+      Serve the local configuration web UI. Loopback-only: a non-loopback
+      listen_addr is refused. Requires web_ui.enabled: true in the config.
+
+  calendar-bridge version
+      Print version, commit, build date, Go version and platform.
+
+Flags:
+  -config <path>   Path to the config file (default "config.yaml").
+  -dry-run         Report the blocks that would be created, moved and removed
+                   without writing anything. Reads still hit the Calendar API,
+                   so working credentials are still required.
+  -json            Emit the pass result as a single JSON object on stdout
+                   (sync-once only). Logs continue to go to stderr.
+
+Exit codes:
+  0  success
+  2  usage error (bad flags, unknown command, missing argument)
+  3  configuration error
+  4  an account needs authorization, or its token file is unreadable
+  5  the sync pass ran but reported failures
+  6  could not start (address in use, listener refused)
+
+Docs: https://github.com/dcotelo/calendar-bridge
 `)
 }
 
-func loadConfig(fs *flag.FlagSet, args []string) *config.Config {
+// parseAndLoad parses args and loads the config, returning the error rather
+// than exiting. Callers that need to emit something before dying (sync-once
+// with -json) use this; the rest use loadConfig.
+func parseAndLoad(fs *flag.FlagSet, args []string) (*config.Config, error) {
 	configPath := fs.String("config", "config.yaml", "path to config file")
-	// fs was constructed with flag.ExitOnError, so Parse already exits the
-	// process on a parse error; the returned error is always nil here.
-	_ = fs.Parse(args)
+	parseFlags(fs, args)
+	return config.Load(*configPath)
+}
 
-	cfg, err := config.Load(*configPath)
+func loadConfig(fs *flag.FlagSet, args []string) *config.Config {
+	cfg, err := parseAndLoad(fs, args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "loading config: %v\n", err)
-		os.Exit(1)
+		// The error is deliberately dropped rather than printed. This is a
+		// daemon path — under systemd stderr is the journal, under Docker it
+		// is `docker logs` — so the on-disk layout stays out of it, and the
+		// operator passed the path on the command line anyway.
+		//
+		// config.Load is independently path-free (it strips the *fs.PathError
+		// cause), so printing err would be safe; the message below is kept
+		// stable on purpose instead. See reportConfigError.
+		reportConfigError()
+		os.Exit(exitConfig)
 	}
 	return cfg
 }
 
+// reportConfigError prints a stable, path-free message for an unloadable
+// config. The distinction between "missing" and "invalid" is deliberately not
+// drawn here: both are fixed by looking at the file the operator named.
+func reportConfigError() {
+	fmt.Fprintln(os.Stderr, "loading config: could not read or parse the config file "+
+		"(check the -config path and its contents)")
+}
+
 func runAuth(args []string) {
-	fs := flag.NewFlagSet("auth", flag.ExitOnError)
+	fs := flag.NewFlagSet("auth", flag.ContinueOnError)
 	configPath := fs.String("config", "config.yaml", "path to config file")
 	accountName := fs.String("account", "", "account name from config to authorize")
-	_ = fs.Parse(args) // ExitOnError FlagSet: Parse exits on error, never returns one here
+	parseFlags(fs, args)
 
 	if *accountName == "" {
-		fmt.Fprintln(os.Stderr, "auth: -account is required")
-		os.Exit(1)
+		fmt.Fprintln(os.Stderr, "auth: -account is required\n\nExample:\n  calendar-bridge auth -config config.yaml -account personal")
+		os.Exit(exitUsage)
 	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "loading config: %v\n", err)
-		os.Exit(1)
+		reportConfigError()
+		os.Exit(exitConfig)
 	}
 
 	var target *config.Account
@@ -115,14 +223,23 @@ func runAuth(args []string) {
 		}
 	}
 	if target == nil {
-		fmt.Fprintf(os.Stderr, "auth: no account named %q in config\n", *accountName)
-		os.Exit(1)
+		names := make([]string, 0, len(cfg.Accounts))
+		for _, a := range cfg.Accounts {
+			names = append(names, a.Name)
+		}
+		fmt.Fprintf(os.Stderr, "auth: no account named %q in config; configured accounts are: %s\n",
+			*accountName, strings.Join(names, ", "))
+		os.Exit(exitUsage)
 	}
 
 	ctx := context.Background()
 	if err := googleauth.Authorize(ctx, target.CredentialsFile, target.TokenFile); err != nil {
-		fmt.Fprintf(os.Stderr, "authorizing %s: %v\n", *accountName, err)
-		os.Exit(1)
+		// Named by ACCOUNT, which is what the operator acts on. googleauth
+		// keeps DIRECTORIES out of its errors; a bare base name may remain and
+		// is deliberately kept, because it identifies which of several token
+		// files is at fault without disclosing where they live.
+		fmt.Fprintf(os.Stderr, "authorizing account %s failed: %v\n", *accountName, err)
+		os.Exit(exitAuth)
 	}
 }
 
@@ -172,58 +289,182 @@ func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 // reportSetupError prints a setup failure with an actionable next step for the
 // two causes an operator can actually fix themselves, rather than only the
 // wrapped error text.
-func reportSetupError(err error) {
+func reportSetupError(err error) int {
 	fmt.Fprintf(os.Stderr, "setting up: %v\n", err)
 	switch {
 	case errors.Is(err, googleauth.ErrNeedsAuth):
 		fmt.Fprintln(os.Stderr, "\nRun the authorization flow for that account:\n  calendar-bridge auth -config <config.yaml> -account <name>")
+		return exitAuth
 	case errors.Is(err, googleauth.ErrTokenInaccessible):
 		fmt.Fprintln(os.Stderr, "\nThe token file exists but could not be opened — check its ownership and\n"+
 			"permissions, and those of the directory holding it. It must be readable AND\n"+
 			"writable by the user running calendar-bridge (refreshed tokens are written back).")
+		return exitAuth
 	case errors.Is(err, googleauth.ErrTokenUnreadable):
 		fmt.Fprintln(os.Stderr, "\nThe token file is present but corrupt (an interrupted write, or hand-edited).\n"+
 			"Delete it and re-run the authorization flow:\n  calendar-bridge auth -config <config.yaml> -account <name>")
+		return exitAuth
+	}
+	return exitRuntime
+}
+
+// passReport is the -json shape of a single sync pass. Counts, timings and
+// account names only — no event data.
+type passReport struct {
+	Version string `json:"version"`
+	DryRun  bool   `json:"dry_run"`
+	OK      bool   `json:"ok"`
+	// Interrupted reports a pass cut short by SIGINT/SIGTERM. That exits 0,
+	// because it is an intentional shutdown rather than a failure — so without
+	// this a consumer could not tell it apart from a genuine sync error, which
+	// exits 5. When true, OK is true and Error is empty.
+	Interrupted bool     `json:"interrupted,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	StartedAt   string   `json:"started_at"`
+	DurationMS  int64    `json:"duration_ms"`
+	Created     int      `json:"created"`
+	Updated     int      `json:"updated"`
+	Deleted     int      `json:"deleted"`
+	Skipped     int      `json:"skipped"`
+	Healthy     []string `json:"healthy_accounts"`
+	Failed      []string `json:"failed_accounts,omitempty"`
+}
+
+// emitFailureReport writes the -json object for a failure that happened before
+// a sync pass could run, so stdout still carries exactly one decodable object.
+//
+// The counts are zero and the duration is zero because no pass took place —
+// that is the honest report, and it is distinguishable from a pass that ran
+// and changed nothing by OK being false with a non-empty error.
+//
+// err is safe to include: config.Load and the googleauth setup errors are
+// path-free by construction, which their own tests assert.
+func emitFailureReport(dryRun bool, err error) {
+	rep := passReport{
+		Version:   versionString(),
+		DryRun:    dryRun,
+		OK:        false,
+		Error:     err.Error(),
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if encErr := enc.Encode(rep); encErr != nil {
+		fmt.Fprintf(os.Stderr, "writing JSON report: %v\n", encErr)
 	}
 }
 
-func runSyncOnce(args []string) {
-	fs := flag.NewFlagSet("sync-once", flag.ExitOnError)
-	cfg := loadConfig(fs, args)
+// wasInterrupted reports whether a failed pass was cut short by SIGINT/SIGTERM
+// rather than by a genuine error. syncErr is what SyncOnce returned; ctxErr is
+// the state of the *signal* context (not the per-cycle timeout context).
+//
+// Both conditions are load-bearing:
+//
+//   - ctxErr != nil alone would misclassify any failure that happened to land
+//     just before a signal: a 401 returning microseconds before SIGINT would
+//     exit 0 and look like a clean shutdown, silently hiding a broken account.
+//   - errors.Is(syncErr, context.Canceled) alone would treat the per-cycle
+//     timeout as a shutdown, because a timed-out cycle also cancels. The
+//     signal context is the one that distinguishes "operator asked to stop"
+//     from "this pass took too long", and a timeout must exit non-zero.
+//
+// A pass that genuinely failed and was then cancelled wraps both, and counts
+// as interrupted: the operator asked it to stop, and the next run re-reports
+// anything still wrong.
+func wasInterrupted(syncErr, ctxErr error) bool {
+	return syncErr != nil && ctxErr != nil && errors.Is(syncErr, context.Canceled)
+}
 
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+func runSyncOnce(args []string) {
+	fs := flag.NewFlagSet("sync-once", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "report what would change without writing to any calendar")
+	asJSON := fs.Bool("json", false, "emit the pass result as JSON on stdout")
+	cfg, cfgErr := parseAndLoad(fs, args)
+
+	// With -json, stdout carries exactly one JSON object; logs go to stderr so
+	// the output stays machine-readable.
+	logDest := io.Writer(os.Stdout)
+	if *asJSON {
+		logDest = os.Stderr
+	}
+	logger := slog.New(slog.NewTextHandler(logDest, nil))
+
+	// A -json consumer gets a decodable object on EVERY exit, including the
+	// two that happen before a pass can start. Emitting nothing on the most
+	// common failures — an unreadable config, an account that needs
+	// authorization — forces the consumer to parse stderr or infer from the
+	// exit code alone.
+	if cfgErr != nil {
+		reportConfigError()
+		if *asJSON {
+			emitFailureReport(*dryRun, cfgErr)
+		}
+		os.Exit(exitConfig)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	engine, _, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
-		reportSetupError(err)
-		os.Exit(1)
+		// reportSetupError writes the operator-facing guidance to stderr and
+		// classifies the exit code; the JSON object is the machine-facing
+		// half of the same failure.
+		code := reportSetupError(err)
+		if *asJSON {
+			emitFailureReport(*dryRun, err)
+		}
+		os.Exit(code)
 	}
+	engine.DryRun = *dryRun
 
 	cycleCtx, cancel := context.WithTimeout(ctx, syncCycleTimeout)
 	defer cancel()
-	res, err := engine.SyncOnce(cycleCtx)
-	if err != nil {
-		// A SIGINT/SIGTERM during this pass cancels ctx (and therefore
-		// cycleCtx), which SyncOnce surfaces as an error. That's an
-		// intentional, expected shutdown, not a failure — treat it the
-		// same way the run loop does and exit 0. Genuine timeouts and API
-		// errors still exit non-zero.
-		if ctx.Err() != nil {
-			logger.Info("received shutdown signal during sync, exiting")
-			return
+	res, syncErr := engine.SyncOnce(cycleCtx)
+
+	interrupted := wasInterrupted(syncErr, ctx.Err())
+
+	if *asJSON {
+		rep := passReport{
+			Version:     versionString(),
+			DryRun:      *dryRun,
+			OK:          syncErr == nil || interrupted,
+			Interrupted: interrupted,
+			StartedAt:   res.Started.UTC().Format(time.RFC3339),
+			DurationMS:  res.Duration().Milliseconds(),
+			Created:     res.Created, Updated: res.Updated,
+			Deleted: res.Deleted, Skipped: res.Skipped,
+			Healthy: res.HealthyAccounts, Failed: res.FailedAccounts,
 		}
-		fmt.Fprintf(os.Stderr, "sync failed: %v\n", err)
-		os.Exit(1)
+		if syncErr != nil && !interrupted {
+			rep.Error = syncErr.Error()
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if encErr := enc.Encode(rep); encErr != nil {
+			fmt.Fprintf(os.Stderr, "writing JSON report: %v\n", encErr)
+			os.Exit(exitRuntime)
+		}
 	}
-	logger.Info("sync pass complete",
-		"created", res.Created, "updated", res.Updated, "deleted", res.Deleted,
-		"skipped", res.Skipped, "duration", res.Duration())
+
+	switch {
+	case interrupted:
+		logger.Info("received shutdown signal during sync, exiting")
+	case syncErr != nil:
+		if !*asJSON {
+			fmt.Fprintf(os.Stderr, "sync failed: %v\n", syncErr)
+		}
+		os.Exit(exitSyncFailure)
+	case !*asJSON:
+		logger.Info("sync pass complete", "dry_run", *dryRun,
+			"created", res.Created, "updated", res.Updated, "deleted", res.Deleted,
+			"skipped", res.Skipped, "duration", res.Duration())
+	}
 }
 
 func runSync(args []string) {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "report what would change without writing to any calendar")
 	cfg := loadConfig(fs, args)
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -234,14 +475,17 @@ func runSync(args []string) {
 
 	engine, services, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
-		reportSetupError(err)
-		os.Exit(1)
+		os.Exit(reportSetupError(err))
+	}
+	engine.DryRun = *dryRun
+	if *dryRun {
+		logger.Warn("dry-run mode: no calendar will be written to")
 	}
 
 	interval, err := time.ParseDuration(cfg.PollInterval)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid poll_interval %q: %v\n", cfg.PollInterval, err)
-		os.Exit(1)
+		os.Exit(exitConfig)
 	}
 
 	// Optional push path: when webhook is enabled, start the receiver and the
@@ -254,7 +498,7 @@ func runSync(args []string) {
 		trigger, wait, err := startWebhook(ctx, cfg, services, logger)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "starting webhook: %v\n", err)
-			os.Exit(1)
+			os.Exit(exitRuntime)
 		}
 		pushTrigger = trigger
 		waitWebhook = wait
@@ -385,21 +629,22 @@ func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*
 }
 
 func runUI(args []string) {
-	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	fs := flag.NewFlagSet("ui", flag.ContinueOnError)
 	configPath := fs.String("config", "config.yaml", "path to config file")
-	_ = fs.Parse(args)
+	parseFlags(fs, args)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		// config.Load embeds the path in its error; keep it out of stderr
-		// (shared logs) and emit a stable message. The operator knows the path
-		// they passed via -config.
+		// The message is deliberately stable and path-free: stderr is a
+		// shared log (the journal under systemd, `docker logs` under Docker)
+		// and the operator already knows the path they passed via -config.
+		// config.Load is itself path-free, so this is belt-and-braces.
 		fmt.Fprintln(os.Stderr, "ui: failed to load config (check -config path and file contents)")
-		os.Exit(1)
+		os.Exit(exitConfig)
 	}
 	if !cfg.WebUI.Enabled {
 		fmt.Fprintln(os.Stderr, "ui: web_ui.enabled is false in config; set it to true to run the UI")
-		os.Exit(1)
+		os.Exit(exitConfig)
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -435,10 +680,10 @@ func runUI(args []string) {
 	statusFn := func() webui.Status {
 		current, err := config.Load(*configPath)
 		if err != nil {
-			// config.Load embeds the config path in its error text; keep that
-			// out of both the shared log and the reported status (this runs
-			// on every page load, sync, and reload) and log/report a stable,
-			// path-free message instead.
+			// Keep the path out of both the shared log and the reported
+			// status — this runs on every page load, sync and reload, and
+			// the status is rendered in a browser. config.Load is itself
+			// path-free, so this is belt-and-braces.
 			logger.Warn("webui: status could not load config")
 			return webui.Status{LastError: "config load failed (check -config path and file contents)"}
 		}
@@ -455,7 +700,7 @@ func runUI(args []string) {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ui: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitConfig)
 	}
 
 	httpSrv := &http.Server{
@@ -487,6 +732,6 @@ func runUI(args []string) {
 	logger.Info("serving configuration UI", "addr", cfg.WebUI.ListenAddr, "auth", authNote)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(os.Stderr, "ui: server error: %v\n", err)
-		os.Exit(1)
+		os.Exit(exitRuntime)
 	}
 }

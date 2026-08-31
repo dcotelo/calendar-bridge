@@ -16,3 +16,5 @@ secrets/
 # OS/editor
 .DS_Store
 *.swp
+coverage.out
+bin/

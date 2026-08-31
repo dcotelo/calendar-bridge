@@ -539,3 +539,54 @@ func TestClient_ErrorsNeverContainTheSuppliedPath(t *testing.T) {
 		assertNoPath(t, saveToken(blocked, &oauth2.Token{AccessToken: "a", RefreshToken: "r"}))
 	})
 }
+
+// The two error paths the dedicated redaction test did not reach: a malformed
+// (rather than missing) credentials file, and the interactive Authorize flow.
+func TestAuthorize_ErrorsNeverContainTheSuppliedPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "aNoThErDiStInCtIvEdIr")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		call func(t *testing.T) error
+	}{
+		{
+			name: "Authorize with a missing credentials file",
+			call: func(t *testing.T) error {
+				return Authorize(context.Background(),
+					filepath.Join(root, "absent.json"), filepath.Join(root, "t.json"))
+			},
+		},
+		{
+			name: "Authorize with a malformed credentials file",
+			call: func(t *testing.T) error {
+				bad := writeFile(t, root, "malformed.json", `{"installed": "not an object"}`)
+				return Authorize(context.Background(), bad, filepath.Join(root, "t.json"))
+			},
+		},
+		{
+			name: "Client with a malformed credentials file",
+			call: func(t *testing.T) error {
+				bad := writeFile(t, root, "malformed2.json", `{"installed": "not an object"}`)
+				_, err := Client(context.Background(), bad, filepath.Join(root, "t.json"), discardLogger())
+				return err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call(t)
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			// Both the full path and the leaf name: a bare base name is still
+			// a disclosure when the directory itself is the secret.
+			if strings.Contains(err.Error(), root) || strings.Contains(err.Error(), "aNoThErDiStInCtIvEdIr") {
+				t.Errorf("error discloses the secrets directory: %v", err)
+			}
+		})
+	}
+}

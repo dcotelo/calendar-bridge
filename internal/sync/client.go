@@ -87,29 +87,58 @@ func (c *googleCalendarClient) ListEvents(ctx context.Context, calendarID string
 }
 
 func (c *googleCalendarClient) FindBlockBySource(ctx context.Context, calendarID, srcAccount, srcEventID string) (*calendar.Event, error) {
-	call := c.svc.Events.List(calendarID).
-		PrivateExtendedProperty(sourceAccountKey + "=" + srcAccount).
-		PrivateExtendedProperty(sourceEventKey + "=" + srcEventID)
+	// Follow nextPageToken to completion, exactly as ListEvents does. The
+	// Calendar API can return a page with NO items but a non-empty
+	// nextPageToken, so stopping at the first response can miss an owned block
+	// that exists — and the caller then inserts a second block for the same
+	// source event, producing a duplicate busy block on the destination.
+	pageToken := ""
+	for {
+		// Both filters must go in ONE call. The generated setter uses SetMulti,
+		// which REPLACES the parameter rather than appending, so chaining two
+		// calls silently drops the first — leaving the query filtered on the
+		// event ID alone and able to match a block belonging to a different
+		// source account.
+		call := c.svc.Events.List(calendarID).PrivateExtendedProperty(
+			sourceAccountKey+"="+srcAccount,
+			sourceEventKey+"="+srcEventID,
+		)
+		if pageToken != "" {
+			call = call.PageToken(pageToken)
+		}
 
-	res, err := call.Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("querying existing block (source=%s/%s): %w", srcAccount, srcEventID, err)
-	}
-	for _, ev := range res.Items {
-		// The privateExtendedProperty filter only guarantees the two
-		// queried keys match — it says nothing about whether this event
-		// actually carries the full calendar-bridge ownership tag. A real
-		// user event could coincidentally (or adversarially) carry the
-		// same source-account/source-event property values without being
-		// one calendar-bridge created. ensureBlock unconditionally
-		// updates whatever FindBlockBySource returns, so returning an
-		// unowned event here would let sync silently overwrite a real
-		// event. isOwnedBlock is the actual ownership check.
-		if ev.Status != "cancelled" && isOwnedBlock(ev) {
+		res, err := call.Context(ctx).Do()
+		if err != nil {
+			return nil, fmt.Errorf("querying existing block (source=%s/%s): %w", srcAccount, srcEventID, err)
+		}
+		for _, ev := range res.Items {
+			if ev == nil || ev.Status == "cancelled" {
+				continue
+			}
+			// The privateExtendedProperty filter only guarantees the queried
+			// keys match — it says nothing about whether this event actually
+			// carries the full calendar-bridge ownership tag. A real user event
+			// could coincidentally (or adversarially) carry the same source
+			// properties without being one calendar-bridge created. Callers
+			// update whatever this returns, so an unowned event here would let
+			// sync silently overwrite a real event. isOwnedBlock is the actual
+			// ownership check.
+			if !isOwnedBlock(ev) {
+				continue
+			}
+			// Re-verify the source identity locally rather than trusting the
+			// server-side filter to have applied both terms.
+			acc, _, evID, ok := sourceIdentity(ev)
+			if !ok || acc != srcAccount || evID != srcEventID {
+				continue
+			}
 			return ev, nil
 		}
+		if res.NextPageToken == "" {
+			return nil, nil
+		}
+		pageToken = res.NextPageToken
 	}
-	return nil, nil
 }
 
 func (c *googleCalendarClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
