@@ -464,6 +464,11 @@ func TestRedactDir(t *testing.T) {
 		{"empty dir is a no-op", "", "/a/b/c failed", "/a/b/c failed"},
 		{"root is a no-op", "/", "/a/b/c failed", "/a/b/c failed"},
 		{"dot is a no-op", ".", "./x failed", "./x failed"},
+		// A backslash root must be a no-op too. On Windows this is the
+		// platform separator; on Unix it is simply not a directory anyone
+		// redacts. Either way, replacing it would mangle the message. This
+		// case failed before the guard listed both separators.
+		{"backslash root is a no-op", "\\", `C:\a\b failed`, `C:\a\b failed`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

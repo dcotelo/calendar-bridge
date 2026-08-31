@@ -352,7 +352,20 @@ func tokenChanged(old, new *oauth2.Token) bool {
 // value instead of the real cause.
 func redactDir(err error, dir string) string {
 	msg := err.Error()
-	if dir == "" || dir == "." || dir == string(filepath.Separator) {
+	// A root or empty directory carries no secret worth redacting, and
+	// replacing a one-character path like "/" would mangle every separator in
+	// the message instead — turning "/a/b/c failed" into "…a…b…c failed".
+	//
+	// Both separators are listed rather than just this platform's: config files
+	// are operator-written and may carry Unix-style paths on Windows, where
+	// filepath.Separator is a backslash and "/" would otherwise fall through to
+	// the ReplaceAll below. The mangling is silent when it happens.
+	switch dir {
+	case "", ".", "/", "\\":
+		return msg
+	}
+	// A volume root such as "C:\\" — filepath.Dir of a root is itself.
+	if filepath.Dir(dir) == dir {
 		return msg
 	}
 	return strings.ReplaceAll(msg, dir, "…")
