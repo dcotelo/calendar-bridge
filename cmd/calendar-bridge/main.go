@@ -75,31 +75,36 @@ func main() {
 
 // usage writes the help text. A failed write to stdout or stderr has no
 // useful recovery, so the error is deliberately ignored.
-// wantsHelp reports whether args carry an explicit help request.
+// parseFlags parses args, routing an explicit help request to STDOUT with exit
+// 0 and any other parse error to STDERR with exit 2.
 //
-// flag.ExitOnError sends -h output to STDERR and exits 0, which makes
-// `calendar-bridge sync-once -h | less` show nothing — the same defect the
-// top-level help had. Asked-for help is output, not an error, so it is handled
-// before Parse and written to stdout; a genuinely invalid flag still goes to
-// stderr with exit 2, which is the flag package's own behaviour.
-func wantsHelp(args []string) bool {
-	for _, a := range args {
-		switch a {
-		case "-h", "--help", "-help", "help":
-			return true
-		case "--":
-			return false // everything after this is positional
-		}
-	}
-	return false
-}
+// flag.ExitOnError sends -h output to stderr and exits 0, which makes
+// `calendar-bridge sync-once -h | less` show nothing. The obvious fix — scan
+// args for -h before parsing — is wrong: it would accept `sync-once -bogus -h`
+// and print help, when the flag package's left-to-right parse should fail on
+// -bogus first. ContinueOnError keeps that ordering exactly and lets the
+// destination be chosen per outcome.
+func parseFlags(fs *flag.FlagSet, args []string) {
+	// Suppress the package's own printing; the error paths below choose the
+	// stream and the message.
+	fs.SetOutput(io.Discard)
 
-// helpFor writes a FlagSet's usage to stdout and exits 0.
-func helpFor(fs *flag.FlagSet) {
-	fs.SetOutput(os.Stdout)
-	_, _ = fmt.Fprintf(os.Stdout, "Usage of %s:\n", fs.Name())
-	fs.PrintDefaults()
-	os.Exit(exitOK)
+	err := fs.Parse(args)
+	switch {
+	case err == nil:
+		return
+	case errors.Is(err, flag.ErrHelp):
+		// Asked-for help is output, not an error.
+		fs.SetOutput(os.Stdout)
+		_, _ = fmt.Fprintf(os.Stdout, "Usage of %s:\n", fs.Name())
+		fs.PrintDefaults()
+		os.Exit(exitOK)
+	default:
+		fs.SetOutput(os.Stderr)
+		_, _ = fmt.Fprintf(os.Stderr, "%s: %v\n\nUsage of %s:\n", fs.Name(), err, fs.Name())
+		fs.PrintDefaults()
+		os.Exit(exitUsage)
+	}
 }
 
 func usage(w io.Writer) {
@@ -147,12 +152,7 @@ Docs: https://github.com/dcotelo/calendar-bridge
 
 func loadConfig(fs *flag.FlagSet, args []string) *config.Config {
 	configPath := fs.String("config", "config.yaml", "path to config file")
-	if wantsHelp(args) {
-		helpFor(fs)
-	}
-	// fs was constructed with flag.ExitOnError, so Parse already exits the
-	// process on a parse error; the returned error is always nil here.
-	_ = fs.Parse(args)
+	parseFlags(fs, args)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -175,13 +175,10 @@ func reportConfigError() {
 }
 
 func runAuth(args []string) {
-	fs := flag.NewFlagSet("auth", flag.ExitOnError)
+	fs := flag.NewFlagSet("auth", flag.ContinueOnError)
 	configPath := fs.String("config", "config.yaml", "path to config file")
 	accountName := fs.String("account", "", "account name from config to authorize")
-	if wantsHelp(args) {
-		helpFor(fs)
-	}
-	_ = fs.Parse(args) // ExitOnError FlagSet: Parse exits on error, never returns one here
+	parseFlags(fs, args)
 
 	if *accountName == "" {
 		fmt.Fprintln(os.Stderr, "auth: -account is required\n\nExample:\n  calendar-bridge auth -config config.yaml -account personal")
@@ -310,7 +307,7 @@ type passReport struct {
 }
 
 func runSyncOnce(args []string) {
-	fs := flag.NewFlagSet("sync-once", flag.ExitOnError)
+	fs := flag.NewFlagSet("sync-once", flag.ContinueOnError)
 	dryRun := fs.Bool("dry-run", false, "report what would change without writing to any calendar")
 	asJSON := fs.Bool("json", false, "emit the pass result as JSON on stdout")
 	cfg := loadConfig(fs, args)
@@ -378,7 +375,7 @@ func runSyncOnce(args []string) {
 }
 
 func runSync(args []string) {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	dryRun := fs.Bool("dry-run", false, "report what would change without writing to any calendar")
 	cfg := loadConfig(fs, args)
 
@@ -544,12 +541,9 @@ func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*
 }
 
 func runUI(args []string) {
-	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	fs := flag.NewFlagSet("ui", flag.ContinueOnError)
 	configPath := fs.String("config", "config.yaml", "path to config file")
-	if wantsHelp(args) {
-		helpFor(fs)
-	}
-	_ = fs.Parse(args)
+	parseFlags(fs, args)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
