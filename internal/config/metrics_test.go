@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeConfig writes a config file with two valid accounts plus whatever extra
@@ -166,4 +167,61 @@ func TestSave_PreservesMetricsBlock(t *testing.T) {
 	if reloaded.Metrics != cfg.Metrics {
 		t.Errorf("metrics block changed across a save/load round trip: %+v -> %+v", cfg.Metrics, reloaded.Metrics)
 	}
+}
+
+// A poll_interval large enough to overflow the derived ready_max_age must be
+// rejected, and the derivation itself must saturate rather than wrap.
+//
+// time.Duration is an int64 of nanoseconds, so 3*d goes NEGATIVE above
+// maxDuration/3. A negative max age makes every readiness check see the last
+// success as too old, so /readyz never passes and a container never becomes
+// ready — from a config value that parsed cleanly. applyDefaults runs after
+// Validate in Load, so the derivation cannot rely on validation having run.
+func TestReadyMaxAge_DoesNotOverflow(t *testing.T) {
+	t.Run("Load rejects an interval that would overflow", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "config.yaml")
+		body := `accounts:
+  - name: a
+    credentials_file: c.json
+    token_file: t.json
+    calendar_id: primary
+  - name: b
+    credentials_file: c2.json
+    token_file: t2.json
+    calendar_id: primary
+poll_interval: 1000000h
+metrics:
+  enabled: true
+`
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if _, err := Load(p); err == nil {
+			t.Fatal("Load accepted a poll_interval that overflows the derived ready_max_age")
+		}
+	})
+
+	// Defence in depth: even called directly, past validation, the derivation
+	// must never produce a negative duration.
+	t.Run("the derivation saturates", func(t *testing.T) {
+		for _, in := range []string{"1000000h", "2562047h", "9223372036854775807ns", "100000000h"} {
+			got := threePollIntervals(in)
+			d, err := time.ParseDuration(got)
+			if err != nil {
+				t.Errorf("threePollIntervals(%q) = %q, which does not parse: %v", in, got, err)
+				continue
+			}
+			if d <= 0 {
+				t.Errorf("threePollIntervals(%q) = %q (%v); a non-positive max age makes /readyz never pass", in, got, d)
+			}
+		}
+	})
+
+	// The ordinary case must be unchanged.
+	t.Run("normal intervals are still tripled", func(t *testing.T) {
+		if got := threePollIntervals("5m"); got != "15m0s" {
+			t.Errorf("threePollIntervals(\"5m\") = %q, want \"15m0s\"", got)
+		}
+	})
 }
