@@ -281,7 +281,11 @@ rm -rf ~/calendar-bridge
 ```
 
 **4. Remove the busy blocks it created.** Manual — a stopped container collects
-nothing. Search each calendar for your `block_title` and delete the results.
+nothing. delete only events carrying the private extended property
+`calendarBridgeOwner=calendar-bridge`, which no human event has. **Do not delete
+by `block_title`** — it is configurable, it is ordinary text on the event, and a
+title search will also match real events someone created with the same name. See
+[Removing it cleanly](README.md#removing-it-cleanly) for the API query.
 
 ---
 

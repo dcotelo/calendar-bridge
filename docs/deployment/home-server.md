@@ -127,7 +127,11 @@ Identical to [the local guide](local.md#upgrading) for Option A, or
 [the Docker guide](docker.md#upgrading) for Option B.
 
 Do not forget the last step in either case: **the busy blocks it created are not
-removed when you stop it.** Search each calendar for your `block_title`.
+removed when you stop it.** delete only events carrying the private extended property
+`calendarBridgeOwner=calendar-bridge`, which no human event has. **Do not delete
+by `block_title`** — it is configurable, it is ordinary text on the event, and a
+title search will also match real events someone created with the same name. See
+[Removing it cleanly](README.md#removing-it-cleanly) for the API query.
 
 ---
 

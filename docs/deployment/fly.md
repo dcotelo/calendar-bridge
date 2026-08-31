@@ -221,7 +221,9 @@ fly volumes list -a <your-app>     # confirm the volume went with it
 ```
 
 **4. Remove the busy blocks it created.** Manual. Search each calendar for your
-`block_title` and delete the results. **Do this before destroying the app** if
+the private extended property `calendarBridgeOwner=calendar-bridge` and delete
+only those — never by `block_title`, which can match real events (see
+[Removing it cleanly](README.md#removing-it-cleanly)). **Do this before destroying the app** if
 you would rather calendar-bridge clean up after itself: remove one account from
 `config.yaml`, run a pass so its blocks are collected elsewhere, repeat. Once
 you are down to one account it will refuse to run, and the rest is manual.

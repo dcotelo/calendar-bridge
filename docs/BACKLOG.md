@@ -13,7 +13,7 @@ Effort: **S** ≈ a day, **M** ≈ a few days, **L** ≈ a week or more.
 
 | | |
 |---|---|
-| Value | **High.** The single worst thing about the tool today. Every deployment guide ends with "now search each calendar by hand and delete the results." Garbage collection cannot do it — it only removes blocks whose source is provably gone, and it only sees the fetch window. |
+| Value | **High.** The single worst thing about the tool today. Every deployment guide still ends with a manual step: list the blocks by their `calendarBridgeOwner` property through the API and delete them by hand. Garbage collection cannot do it — it only removes blocks whose source is provably gone, and it only sees the fetch window. |
 | Effort | **M.** A wide `events.list` per account with the owner property filter and no time bound, paginated, then a checked delete each. Needs `--dry-run` and a confirmation. |
 | Risk | **Medium, and it is deletion.** But the blast radius is bounded by the same ownership check every other delete uses, and it is strictly narrower than what the engine already does: no source-matching, just "is it ours". A dry run listing exactly what would go, plus a typed confirmation, makes it safe. |
 

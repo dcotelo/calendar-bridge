@@ -164,9 +164,19 @@ usage for no benefit. Don't.
 
 ## How do I remove every block it ever created?
 
-Search each calendar for your `block_title` and delete the results. There is no
-`uninstall` command yet; it is on the roadmap. Each deployment guide has an
-uninstall section.
+Using the Calendar API, list events with the private extended property
+`calendarBridgeOwner=calendar-bridge` and delete those.
+
+**Do not search by `block_title`.** It is configurable and is ordinary text on
+the event, so a title search also matches real events someone created with the
+same name — and deleting those is unrecoverable. The ownership property is the
+only safe discriminator, and it is the same one the engine checks before it
+modifies anything.
+
+There is no `uninstall` command yet; it is backlog item 1. Each deployment
+guide has an uninstall section, and
+[Removing it cleanly](deployment/README.md#removing-it-cleanly) has the exact
+API query.
 
 ## Does it phone home?
 

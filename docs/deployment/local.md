@@ -220,8 +220,11 @@ rm -f "$(command -v calendar-bridge)"
 ```
 
 **4. Remove the busy blocks it created.** This is manual — a stopped process
-collects nothing. In Google Calendar, search for your `block_title`
-(`Busy (calendar-bridge)`) on each account and delete the results.
+collects nothing. delete only events carrying the private extended property
+`calendarBridgeOwner=calendar-bridge`, which no human event has. **Do not delete
+by `block_title`** — it is configurable, it is ordinary text on the event, and a
+title search will also match real events someone created with the same name. See
+[Removing it cleanly](README.md#removing-it-cleanly) for the API query.
 
 ---
 

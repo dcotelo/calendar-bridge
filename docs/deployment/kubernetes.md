@@ -243,7 +243,9 @@ kubectl delete namespace calendar-bridge
 ```
 
 **4. Remove the busy blocks it created.** Manual. Search each calendar for your
-`block_title` and delete the results.
+the private extended property `calendarBridgeOwner=calendar-bridge` and delete
+only those. **Not** by `block_title`, which can match real events — see
+[Removing it cleanly](README.md#removing-it-cleanly).
 
 Check whether your etcd backups still contain the Secret.
 

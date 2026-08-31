@@ -65,6 +65,27 @@ because it cannot be automated yet:
 
 **Busy blocks are not removed when you stop running calendar-bridge.** Garbage
 collection only removes blocks it can see and match to a missing source; a
-process that is not running collects nothing. Search each calendar for your
-`block_title` and delete the results. A clean-uninstall command is on the
-roadmap.
+process that is not running collects nothing.
+
+**Do not delete by title.** `block_title` is configurable and is ordinary text
+on the event — searching for it will also match real events a person created
+with the same name, and deleting those is unrecoverable. Every block
+calendar-bridge creates instead carries a private extended property,
+`calendarBridgeOwner=calendar-bridge`, which no human event has. That property
+is the only safe way to tell them apart, and it is the same check the engine
+itself uses before it ever modifies an event.
+
+Filter on ownership. With the Calendar API, list only owned blocks:
+
+```text
+GET /calendars/{calendarId}/events
+    ?privateExtendedProperty=calendarBridgeOwner%3Dcalendar-bridge
+    &timeMin=...&timeMax=...
+```
+
+Delete only what that returns. In the Google Calendar web UI there is no way to
+filter by a private extended property, so the UI cannot do this safely — use
+the API, or a script over it.
+
+A clean-uninstall command that does exactly this is on the roadmap
+(`calendar-bridge uninstall`, backlog item 1).

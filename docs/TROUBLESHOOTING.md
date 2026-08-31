@@ -263,7 +263,11 @@ to a *missing* source. If you stop running calendar-bridge, delete `config.yaml`
 or remove an account from the config, the blocks it already created stay where
 they are. There is no clean-uninstall command yet — it is on the roadmap.
 
-**Fix.** Search each calendar for your `block_title` and delete the results. In
+**Fix.** delete only events carrying the private extended property
+`calendarBridgeOwner=calendar-bridge`, which no human event has. **Do not delete
+by `block_title`** — it is configurable, it is ordinary text on the event, and a
+title search will also match real events someone created with the same name. See
+[Removing it cleanly](deployment/README.md#removing-it-cleanly) for the API query. In
 Google Calendar's search box:
 
 ```
