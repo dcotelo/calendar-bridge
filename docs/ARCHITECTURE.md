@@ -162,13 +162,36 @@ ever reads `.private`, so a crafted invitation cannot forge the owner tag. See
 
 ## What crosses an account boundary
 
-Exactly two things: **a time span, and the fixed `block_title` string.**
+**No event content.** What does cross is a time span, the fixed `block_title`
+string, and synchronization metadata.
 
-That is structural rather than conventional. The provider-neutral `Event` type
-the engine reasons about has fields for an ID, a start, an end, cancellation,
-transparency, the owner's invitation response, and ownership metadata — and no
-fields at all for a summary, description, location, or attendees. There is
-nowhere for event content to flow even if some future change tried to send it.
+The no-content part is structural rather than conventional. The
+provider-neutral `Event` type the engine reasons about has fields for an ID, a
+start, an end, cancellation, transparency, the owner's invitation response, and
+ownership metadata — and no fields at all for a summary, description, location,
+or attendees. There is nowhere for event content to flow even if some future
+change tried to send it.
+
+The metadata is deliberate and worth knowing about, because it is written onto
+the block in the destination calendar as private extended properties:
+
+| Property | Holds |
+|---|---|
+| `calendarBridgeOwner` | The constant `calendar-bridge`. Carries no information; it is what makes a block distinguishable from a real event. |
+| `calendarBridgeSourceAccount` | The **name you gave the source account** in `config.yaml`, e.g. `work-acme`. |
+| `calendarBridgeSourceCalendarID` | The source `calendar_id`. Usually `primary`, but a secondary calendar's ID looks like `c_…@group.calendar.google.com`. |
+| `calendarBridgeSourceEventID` | Google's opaque ID for the source event. |
+
+Those three source fields are what makes correct garbage collection possible —
+a block can be matched back to its origin, so only provably-dead blocks are
+removed. Without them the tool could not safely delete anything.
+
+The trade-off: anyone who can read events on the destination calendar can see
+which source account and which source calendar a block came from, and can
+correlate a block to a specific source event. They cannot see what that event
+was. If your account *names* or a secondary `calendar_id` are themselves
+sensitive, that is the field to think about — the properties are `private`, so
+they are visible to the calendar's own readers rather than to invitees.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{

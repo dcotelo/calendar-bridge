@@ -130,7 +130,7 @@ tools: ## Install the pinned lint and vulnerability tools
 	$(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 .PHONY: ci
-ci: build vet fmt-check test-race cover lint vuln ## Everything CI runs
+ci: build vet fmt-check test-race cover lint vuln ## The CI check subset (not fuzz/demos/screenshots)
 	@echo "ci: all checks passed"
 
 .PHONY: screenshots

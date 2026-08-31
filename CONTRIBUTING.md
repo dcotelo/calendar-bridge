@@ -18,7 +18,9 @@ Requires Go 1.25+.
 git clone https://github.com/dcotelo/calendar-bridge.git
 cd calendar-bridge
 make tools     # installs the pinned golangci-lint and govulncheck
-make ci        # everything CI runs
+make ci        # the CI check subset: build, vet, gofmt, race tests, coverage,
+               # lint, vulncheck. Not fuzz/screenshots/demos — those are
+               # separate targets and separate CI jobs.
 ```
 
 `make help` lists every target. The useful ones:

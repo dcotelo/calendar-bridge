@@ -9,8 +9,10 @@ mirror, what was seen last pass. The obvious implementation is SQLite.
 
 ## Decision
 
-There is no database, and no local state of any kind beyond the config file and
-the OAuth tokens. Everything the engine needs is read from the calendars at the
+There is no database, and no *persisted* local state beyond the config file and
+the OAuth tokens. The engine does hold state in memory during a pass — a block
+index, and the metrics counters while the process runs — none of which survives
+a restart, which is the property this decision is about. Everything the engine needs is read from the calendars at the
 start of every pass, using the ownership tags from
 [ADR 0002](0002-extended-properties-ownership.md).
 
@@ -27,7 +29,10 @@ make the difference.
   simply recreates it. There is no cache that can be wrong.
 - Rollback is trivial — run the older binary. This is why
   [UPGRADING.md](../UPGRADING.md) has no migration section.
-- Moving to a new machine means copying two files.
+- Moving to a new machine means copying `config.yaml` plus a credentials file
+  and a token file **per account** — so 2N+1 files for N accounts, five for the
+  usual two-account setup. Not "two files": each account has its own
+  `credentials_file` and `token_file`.
 - Crash safety comes free: a partial pass leaves a partial but correct state,
   and the next pass finishes the job. No transactions, no recovery logic.
 - Running two instances simultaneously is wasteful but not corrupting.

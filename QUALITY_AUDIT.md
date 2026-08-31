@@ -159,9 +159,11 @@ and have `saveToken` refuse to overwrite an existing token that has a refresh
 token with one that doesn't.
 
 Two adjacent issues in the same call, worth fixing together:
+
 - The `state` parameter is the literal string `"state-token"` and is never
   verified. Use a per-run random value and check it against the pasted redirect
   URL when one is pasted.
+
 - No PKCE. `golang.org/x/oauth2` supports it directly
   (`oauth2.GenerateVerifier()` + `S256ChallengeOption`/`VerifierOption`), and
   Google recommends it for installed apps.
@@ -174,10 +176,12 @@ Two adjacent issues in the same call, worth fixing together:
 refreshes in memory. Nothing writes the refreshed token back.
 
 Consequences, in increasing severity:
+
 - Every process start burns a refresh round-trip before the first API call.
 - If the OAuth consent screen is in **Testing** publishing status, Google
   expires refresh tokens after 7 days. The user must re-auth — and F-02 means
   that re-auth produces a token that dies in an hour.
+
 - If Google ever rotates the refresh token, the on-disk copy is stale
   immediately.
 
@@ -204,9 +208,11 @@ cancelled, and is it owner-tagged. Everything else lands in `real` and gets a
 Busy block on every other account.
 
 So:
+
 - An event you set to **Free** ("show as available") in Google Calendar —
   `transparency: "transparent"` — produces an *opaque* block elsewhere
   (`sync.go:218` hardcodes `Transparency: "opaque"`).
+
 - A meeting you **declined** still holds the slot on every other calendar.
 - A **tentative** invitation is treated as firmly busy.
 
@@ -285,6 +291,7 @@ fixture as an offset from wall-clock now. Nothing can assert on:
 
 - an event exactly at the `timeMax` lookahead boundary, or crossing it in
   either direction;
+
 - the 24h look-back buffer, or an in-progress event at its edge;
 - a DST transition inside an event's span;
 - two accounts whose events are expressed in different IANA zones;
@@ -347,15 +354,20 @@ zero deps if you'd prefer.
 - `index.html:24` — `.row { grid-template-columns: 1fr 1fr 1fr 1fr auto }` with
   no media query. Four text inputs plus a button across a 380px viewport gives
   each field ~70px. Unusable on a phone and bad at 200% zoom.
+
 - `index.html:29` — `.primary { background: #2a7; color: #fff }` is roughly
   2.3:1. WCAG AA needs 4.5:1.
+
 - `index.html:20,39` — `label { color: #888e }` and `.muted { color: #8888 }`
   are translucent mid-greys that fail contrast against both light and dark
   backgrounds.
+
 - `index.html:51,100` — neither `#status` nor `#toast` has `aria-live`, so a
   screen-reader user gets no announcement of a save result or a sync failure.
+
 - `index.html:169` — "Remove" deletes an account row immediately, no
   confirmation, no undo.
+
 - `index.html:170` — an empty `<label>` element used purely for grid alignment.
 
 Also worth noting: there is no empty state for a fresh config, no loading state
@@ -437,11 +449,13 @@ Phase-3 test work lands.
 - `release.yml:30` — `goreleaser-action` with `version: latest`. An unpinned
   tool in the artifact-producing path, in a repo that otherwise pins every
   action by SHA and even pins `govulncheck` with a comment explaining why.
+
 - No SBOM. goreleaser has first-class syft support (`sboms:`).
 - No signatures. No cosign keyless signing of archives, checksums, or image.
 - `release.yml:58` — `docker/build-push-action` with no `platforms:`, so the
   GHCR image is amd64-only. arm64 *binaries* ship, but the Raspberry Pi and
   Apple-silicon container stories are broken.
+
 - No provenance attestation (`actions/attest-build-provenance`).
 - Missing from the repo entirely: CodeQL, OpenSSF Scorecard, gitleaks, a
   markdown link checker, PR title lint.
@@ -575,7 +589,6 @@ mechanical but touches the release path, best done as its own PR with a test
 tag), plus the Phase-8 backlog: docs site, Homebrew tap, Helm chart, a real
 CalDAV provider to prove the seam, encrypted-at-rest tokens, `--dry-run` diff
 mode, and an `uninstall` command that removes every block the tool ever created.
-
 
 ---
 
@@ -754,8 +767,25 @@ The matrix above described the state at audit time. Current state:
 | 11 — insert idempotency | Covered | Covered |
 | 12 — no content propagation | Implicit | Covered explicitly on both paths, plus a fuzz target |
 
-**6 of 19 fully covered → 19 of 19.** Plus four fuzz targets and an
-`httptest` double exercising the real Google client, which had none.
+**6 of 19 fully covered → 17 of 19, with two partial.** Plus four fuzz targets
+and an `httptest` double exercising the real Google client, which had none.
+
+The two partials are stated as such in the rows above and should not be counted
+as covered:
+
+- **5g — all-day.** The behaviour is documented and most cases fall out of the
+  5f Free/transparent fix, because Google marks all-day events transparent by
+  default. There is no test asserting what happens to an all-day event that is
+  explicitly marked Busy.
+
+- **5h — recurring.** `singleEvents=true` is asserted against the real client,
+  so the engine sees expanded instances rather than a recurrence rule. Nothing
+  tests a recurrence *exception* — a single moved or cancelled instance of a
+  series.
+
+Both are in `docs/QA.md` as unchecked manual items. Claiming 19 of 19 while two
+rows read "most cases" and "at the query level" was the kind of rounding this
+document exists to avoid.
 
 ### Numbers
 

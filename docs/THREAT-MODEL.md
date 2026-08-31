@@ -14,7 +14,7 @@ Ranked by what an attacker gains.
 
 | Asset | Where it lives | If it leaks |
 |---|---|---|
-| **OAuth refresh tokens** | `token_file` per account, `0600` | Full read/write access to that account's calendar until revoked at [myaccount.google.com/permissions](https://myaccount.google.com/permissions). The refresh token does not expire on its own. This is the crown jewel. |
+| **OAuth refresh tokens** | `token_file` per account, `0600` | Full read/write access to that account's calendar until revoked at [myaccount.google.com/permissions](https://myaccount.google.com/permissions). This is the crown jewel. A refresh token normally survives indefinitely, but not unconditionally: Google expires them after **7 days** while the OAuth consent screen is in **Testing** publishing status, and revocation, a password change, or Workspace admin policy invalidates them at any time. See [TROUBLESHOOTING](TROUBLESHOOTING.md) if syncs start failing weekly. |
 | **OAuth client secret** | `credentials_file` per account, `0600` | On its own, little: an installed-app client secret is not treated as confidential by the OAuth spec, and it cannot be used without a user consenting. Combined with a phishing page it makes a consent screen look legitimate. |
 | **Calendar metadata** | Google's servers; transiently in memory | Event times. calendar-bridge never persists event data, never logs titles or attendees, and never writes content to another calendar. |
 | **Web UI auth token** | `config.yaml`, `0600` | Read and rewrite of `config.yaml`, and the ability to trigger syncs. Since the config names arbitrary file paths, this is close to arbitrary local file read/write in the process's own privileges — see [Local user](#a-local-user-on-the-same-host). |
@@ -157,9 +157,16 @@ list, and shared extended properties.
   crafted invitation cannot masquerade as a calendar-bridge block, and cannot
   make calendar-bridge delete or overwrite anything.
 - **Event content is never read into anything that persists or propagates.** The
-  neutral event model has no title, description, location or attendee fields.
-  Injecting a payload into an event title has nowhere to go: it is not logged,
-  not copied to another calendar, not stored, and not rendered in the web UI.
+  neutral event model has no description, location or attendee fields, and no
+  field carrying a *user's* event title. Injecting a payload into an event title
+  has nowhere to go: it is not logged, not copied to another calendar, not
+  stored, and not rendered in the web UI.
+
+  The model does have one text field, `Event.Title`, and it is populated only
+  for blocks calendar-bridge created itself — where the value is the operator's
+  own `block_title`, never anything a person wrote. It is deliberately left
+  empty for real events, so a real summary cannot enter the model even by
+  accident.
 - The web UI builds its DOM with `textContent` and `value`, never `innerHTML`,
   and the CSP forbids inline script without the per-response nonce.
 
@@ -184,7 +191,10 @@ What reduces the window:
 - CodeQL and OpenSSF Scorecard.
 - Dependabot for Go modules, GitHub Actions, and Docker base images.
 - Every GitHub Action pinned by commit SHA, not by tag.
-- goreleaser pinned to a version range, not `latest`.
+- goreleaser pinned to the exact version `2.12.7` — not a range, and not
+  `latest`. A range would resolve to the newest matching release at run time,
+  which is not a pin. The same version is asserted in CI by the
+  `release-config` job, which fails if the two workflows drift apart.
 - Base images pinned by digest.
 - Releases carry SBOMs, keyless cosign signatures, and build-provenance
   attestations, so you can verify what you downloaded came from this repository's

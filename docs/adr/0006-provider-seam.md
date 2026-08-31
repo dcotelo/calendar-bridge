@@ -23,7 +23,7 @@ implements it over the Google client, and `providerClient` bridges any
 Crucially, **this seam is on the production path**, not an aspirational
 abstraction. Every account's client is:
 
-```
+```text
 providerClient → googleProvider → retryingClient → googleCalendarClient
 ```
 
