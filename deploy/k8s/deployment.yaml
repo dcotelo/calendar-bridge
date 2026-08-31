@@ -108,6 +108,20 @@ spec:
               # memory limit bounds a genuine runaway.
               memory: 128Mi
 
+          # BOTH PROBES REQUIRE THE METRICS ENDPOINT. Your config.yaml in the
+          # Secret must contain:
+          #
+          #     metrics:
+          #       enabled: true
+          #       listen_addr: "0.0.0.0:9090"
+          #
+          # `enabled` defaults to FALSE and `listen_addr` defaults to
+          # 127.0.0.1:9090. With either default in place the kubelet — which
+          # probes the pod IP, not loopback — gets connection refused, liveness
+          # fails, and the pod crashloops for a reason that looks nothing like
+          # a missing config key. Delete both probes if you do not want to
+          # enable metrics.
+          #
           # Liveness deliberately does NOT depend on sync health: an instance
           # that cannot reach Google should keep retrying with backoff, not be
           # killed and restarted. A restart fixes nothing and loses the backoff.
