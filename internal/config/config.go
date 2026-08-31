@@ -4,7 +4,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/url"
 	"os"
@@ -135,12 +137,17 @@ func Load(path string) (*Config, error) {
 	// their own calendar-bridge invocation, not untrusted external input.
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading config file %s: %w", path, err)
+		// Path-free: this error reaches the daemon's stderr, which under
+		// systemd is the journal and under Docker the container log. The
+		// caller supplied the path and can name it if a human needs it. The
+		// wrapped *fs.PathError embeds the full path regardless of this
+		// format string, so its cause is stripped too.
+		return nil, fmt.Errorf("reading config file: %w", pathFree(err))
 	}
 
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config file %s: %w", path, err)
+		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -199,6 +206,17 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("saving config to %s: %w", path, err)
 	}
 	return nil
+}
+
+// pathFree strips filesystem paths out of an OS error, keeping the cause.
+// *fs.PathError embeds the full path in Error() no matter how the wrapping
+// message is formatted, so formatting alone cannot keep it out of a log.
+func pathFree(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
 }
 
 // IsLoopbackAddr reports whether host:port addr binds only the loopback

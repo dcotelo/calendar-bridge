@@ -38,6 +38,16 @@ lookahead_days: 30
 	dir := f.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 
+	// The fuzzer always writes the file before calling Load, so it never
+	// exercises a missing path. Pin that case deterministically here: a failed
+	// Load must return a nil config, so a caller that ignored the error can't
+	// silently run against zero accounts.
+	if cfg, err := Load(filepath.Join(dir, "definitely-absent.yaml")); err == nil {
+		f.Fatal("Load accepted a missing config file")
+	} else if cfg != nil {
+		f.Fatalf("Load returned a config (%+v) alongside an error; it must be nil", cfg)
+	}
+
 	f.Fuzz(func(t *testing.T, contents string) {
 		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 			t.Skip()
