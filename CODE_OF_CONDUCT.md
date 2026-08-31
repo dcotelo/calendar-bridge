@@ -52,7 +52,7 @@ the project in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to me@dcotelo.dev. All complaints will be reviewed and
+reported to <me@dcotelo.dev>. All complaints will be reviewed and
 investigated promptly and fairly.
 
 ## Attribution

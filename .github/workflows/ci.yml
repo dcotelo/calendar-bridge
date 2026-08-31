@@ -146,6 +146,21 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  markdown:
+    name: markdown lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Config and globs live in .markdownlint-cli2.jsonc, so this runs the same
+      # way locally (`npx markdownlint-cli2`) as it does here. Four default
+      # rules are switched off there with reasons; everything else is enforced.
+      #
+      # Added because MD040 and MD031 problems accumulated unnoticed across the
+      # docs — 23 of them — while nothing checked.
+      - run: npx --yes markdownlint-cli2@0.23.2
+
   links:
     name: markdown links
     runs-on: ubuntu-latest
