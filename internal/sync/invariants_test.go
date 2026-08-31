@@ -1090,3 +1090,60 @@ func TestSyncOnce_UpdateIsConditionalOnTheListedETag(t *testing.T) {
 }
 
 var errTestLookup = &testError{"simulated lookup failure"}
+
+// A dry run must fail the same way a real pass does. Its purpose is to preview
+// what a real pass would do, so a read failure it swallowed would make the
+// preview a lie precisely when the operator most needs the truth.
+func TestSyncOnce_DryRunReadFailures(t *testing.T) {
+	cases := []struct {
+		name   string
+		inject func(h *harness)
+	}{
+		{
+			name: "ListEvents fails",
+			inject: func(h *harness) {
+				h.fakes["work-acme"].failList = errTestLookup
+				h.fakes["work-globex"].failList = errTestLookup
+			},
+		},
+		{
+			name: "FindBlockBySource fails on the out-of-window fallback",
+			inject: func(h *harness) {
+				far := baseTime.Add(60 * 24 * time.Hour)
+				h.fakes["work-acme"].seed("stale-block", &calendar.Event{
+					Summary: "Busy (calendar-bridge)",
+					Start:   &calendar.EventDateTime{DateTime: far.Format(time.RFC3339), TimeZone: "UTC"},
+					End:     &calendar.EventDateTime{DateTime: far.Add(time.Hour).Format(time.RFC3339), TimeZone: "UTC"},
+					ExtendedProperties: &calendar.EventExtendedProperties{Private: map[string]string{
+						ownerKey:          ownerValue,
+						sourceAccountKey:  "personal",
+						sourceCalendarKey: "primary",
+						sourceEventKey:    "evt-1",
+					}},
+				})
+				h.fakes["work-acme"].failFind = errTestLookup
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, "personal", "work-acme", "work-globex")
+			h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+			tc.inject(h)
+			h.engine.DryRun = true
+
+			res, err := h.engine.SyncOnce(context.Background())
+			if err == nil {
+				t.Fatal("a dry run must surface read failures, not swallow them")
+			}
+			// A dry run writes nothing regardless — including when it fails.
+			for name, f := range h.fakes {
+				if got := f.writes(); got != 0 {
+					t.Errorf("%s: dry run made %d writes, want 0", name, got)
+				}
+			}
+			_ = res
+		})
+	}
+}

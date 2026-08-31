@@ -79,11 +79,19 @@ func (o Ownership) IsOwned() bool { return o.Owner == ownerValue }
 var ErrNotOwned = errors.New("refusing to write a block that is not calendar-bridge-owned (missing owner tag or source identity)")
 
 // validForWrite reports whether this ownership is safe to act on: it must carry
-// the calendar-bridge owner tag AND a complete source identity (account +
-// event ID). Anything less means we can neither prove ownership nor match the
-// block back to a real source, so writing/deleting on it is unsafe.
+// the calendar-bridge owner tag AND a COMPLETE source identity — account,
+// calendar and event ID. Anything less means we can neither prove ownership nor
+// match the block back to a real source, so writing or deleting on it is
+// unsafe.
+//
+// The calendar ID is required for a specific reason: sourceIdentity, which
+// garbage collection uses to match a block back to its source, refuses an
+// identity missing ANY of the three. If the write gate were the looser of the
+// two, a block could be created with no source calendar, pass every write
+// check, and then never be collectable — an orphan the tool could produce but
+// never clean up. The two predicates must agree.
 func (o Ownership) validForWrite() bool {
-	return o.IsOwned() && o.SourceAccount != "" && o.SourceEventID != ""
+	return o.IsOwned() && o.SourceAccount != "" && o.SourceCalendarID != "" && o.SourceEventID != ""
 }
 
 // Event is the provider-neutral event the sync engine reasons about.

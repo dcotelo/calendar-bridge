@@ -578,3 +578,29 @@ func TestGoogleClient_WriteRetryClassification(t *testing.T) {
 		})
 	}
 }
+
+// FindBlockBySource wraps errors from Events.List. That branch was untested:
+// every other case drives a successful list.
+func TestGoogleClient_FindBlockBySourcePropagatesListErrors(t *testing.T) {
+	api := newFakeCalendarAPI(t)
+	api.listStatus = http.StatusForbidden
+	atomic.StoreInt32(&api.listFailures, 100)
+
+	got, err := api.client().FindBlockBySource(context.Background(), "primary", "personal", "evt-1")
+	if err == nil {
+		t.Fatal("want the list error propagated")
+	}
+	if got != nil {
+		t.Errorf("returned %v alongside an error; a lookup failure must not yield a block", got)
+	}
+	// The wrapper must keep the API error inspectable, or the retry layer
+	// cannot classify it.
+	var apiErr *googleapi.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != http.StatusForbidden {
+		t.Errorf("err = %v, want an inspectable googleapi.Error with code 403", err)
+	}
+	// And it must say which source it was looking for.
+	if !strings.Contains(err.Error(), "personal") || !strings.Contains(err.Error(), "evt-1") {
+		t.Errorf("err = %v, want it to name the source it was querying", err)
+	}
+}

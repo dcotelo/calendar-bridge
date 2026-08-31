@@ -24,6 +24,7 @@ func FuzzSourceIdentity(f *testing.F) {
 	f.Add("CALENDAR-BRIDGE", "personal", "primary", "evt-1")  // wrong case
 	f.Add(ownerValue, "a|b", "primary", "c|d")                // separator injection
 	f.Add(ownerValue, "personal", "primary", "")
+	f.Add(ownerValue, "personal", "", "evt-1") // owner + account + event, no calendar
 	f.Add("\x00", "\x00", "\x00", "\x00")
 
 	f.Fuzz(func(t *testing.T, owner, srcAccount, srcCalendar, srcEvent string) {
@@ -59,8 +60,17 @@ func FuzzSourceIdentity(f *testing.F) {
 		}
 		// validForWrite is what gates every write. It must never be true
 		// without both the owner tag and a usable source identity.
-		if own.validForWrite() && (!owned || srcAccount == "" || srcEvent == "") {
-			t.Fatalf("validForWrite = true for owner=%q account=%q event=%q", owner, srcAccount, srcEvent)
+		// The write gate must agree with sourceIdentity, which garbage
+		// collection uses to match a block back to its source: if the gate were
+		// looser, a block could be written that GC can never match, i.e. an
+		// orphan this tool creates and cannot clean up.
+		if own.validForWrite() && (!owned || srcAccount == "" || srcCalendar == "" || srcEvent == "") {
+			t.Fatalf("validForWrite = true for owner=%q account=%q calendar=%q event=%q",
+				owner, srcAccount, srcCalendar, srcEvent)
+		}
+		if _, _, _, idOK := sourceIdentity(ev); own.validForWrite() != (owned && idOK) {
+			t.Fatalf("write gate and GC matching disagree: validForWrite=%v owned=%v sourceIdentity=%v",
+				own.validForWrite(), owned, idOK)
 		}
 
 		// And a full round trip through the neutral Event must be stable.
