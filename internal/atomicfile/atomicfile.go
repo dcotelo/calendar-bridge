@@ -18,9 +18,14 @@ import (
 const OwnerOnly fs.FileMode = 0o600
 
 // Write writes data to path atomically: it creates a temporary file in the same
-// directory, chmods it to perm, writes and fsyncs it, then renames it over
-// path. A crash at any point leaves either the previous contents or the new
-// ones, never a partial file.
+// directory, chmods it to perm, writes and fsyncs it, renames it over path, and
+// then fsyncs the parent directory so the rename itself is durable. A crash at
+// any point leaves either the previous contents or the new ones, never a
+// partial file.
+//
+// Errors deliberately name only the base of the path. These writes happen on
+// the daemon's hot path and their failures are logged; callers that report to
+// an operator's own terminal add the full path themselves.
 //
 // The temp file is created in path's own directory so the rename is within one
 // filesystem (os.Rename cannot atomically cross filesystems). It is removed on
@@ -29,7 +34,7 @@ func Write(path string, data []byte, perm fs.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("creating temp file in %s: %w", dir, err)
+		return fmt.Errorf("creating temp file in %s: %w", filepath.Base(dir), err)
 	}
 	tmpName := tmp.Name()
 	// Best-effort cleanup if we bail before the rename succeeds. Removing a
@@ -58,7 +63,14 @@ func Write(path string, data []byte, perm fs.FileMode) error {
 		return fmt.Errorf("closing temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("atomically replacing %s: %w", path, err)
+		return fmt.Errorf("atomically replacing %s: %w", filepath.Base(path), err)
+	}
+	// The rename is not durable until the PARENT DIRECTORY is synced: the file's
+	// own fsync above covers its contents, not the directory entry pointing at
+	// it. Reported but not fatal — the data is written and renamed, and failing
+	// here would discard a completed write over a durability hint.
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("syncing directory after replacing %s: %w", filepath.Base(path), err)
 	}
 	return nil
 }

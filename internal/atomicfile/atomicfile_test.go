@@ -83,10 +83,42 @@ func TestWrite_LeavesNoTempFileBehind(t *testing.T) {
 	}
 }
 
-func TestWrite_FailsAndCleansUpWhenDirectoryMissing(t *testing.T) {
+func TestWrite_FailsWhenTheDirectoryIsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "no-such-dir", "secret.json")
 	if err := Write(path, []byte("hello"), OwnerOnly); err == nil {
 		t.Fatal("Write into a missing directory should fail")
+	}
+	// Nothing to assert about cleanup here: os.CreateTemp fails, so no temp
+	// file is ever created. The cleanup branch is covered by the test below.
+}
+
+// The temp file must be removed when a step AFTER its creation fails, or a
+// failing write would litter the secrets directory with .tmp files containing
+// token material.
+//
+// A rename failure is the reachable way to get there: renaming onto an existing
+// directory fails, by which point the temp file has been created, written and
+// synced.
+func TestWrite_RemovesTheTempFileWhenTheRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	// The destination is an existing DIRECTORY, so os.Rename cannot replace it.
+	target := filepath.Join(dir, "occupied")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := Write(target, []byte("hello"), OwnerOnly); err == nil {
+		t.Fatal("Write onto an existing directory should fail")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "occupied" {
+			t.Errorf("a temp file was left behind after the rename failed: %s", e.Name())
+		}
 	}
 }
 

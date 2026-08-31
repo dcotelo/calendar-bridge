@@ -1,6 +1,9 @@
 package googleauth
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -133,6 +136,11 @@ func TestPersistingTokenSource_UnchangedTokenDoesNotRewrite(t *testing.T) {
 	if err := saveToken(path, tok); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	// Compare file IDENTITY, not mtime. atomicfile.Write replaces the file
+	// through a rename, so any unwanted rewrite produces a new inode — whereas
+	// mtime has 1-second granularity on some filesystems and would not change
+	// across three calls microseconds apart, letting this assertion silently
+	// never fail.
 	before, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
@@ -154,7 +162,7 @@ func TestPersistingTokenSource_UnchangedTokenDoesNotRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if !after.ModTime().Equal(before.ModTime()) {
+	if !os.SameFile(before, after) {
 		t.Error("an unchanged token was rewritten; the poll loop would rewrite the token file on every API call")
 	}
 }
@@ -297,5 +305,156 @@ func TestScopes_AreMinimal(t *testing.T) {
 	const want = "https://www.googleapis.com/auth/calendar.events"
 	if Scopes[0] != want {
 		t.Errorf("Scopes[0] = %q, want %q — widening the OAuth scope needs an explicit, reviewed decision", Scopes[0], want)
+	}
+}
+
+// fakeCredentials is a syntactically valid Google "installed app" client
+// credentials document. Every value is fabricated: there is no real project, no
+// real client, and no real secret, and nothing in this suite contacts Google.
+//
+// #nosec G101 -- fabricated fixture, not a credential. The literal
+// "NOT-A-REAL-SECRET" is what makes that unambiguous to a human reader too.
+const fakeCredentials = `{
+  "installed": {
+    "client_id": "000000000000-fakefakefakefakefakefakefake.apps.googleusercontent.com",
+    "project_id": "calendar-bridge-test",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "client_secret": "NOT-A-REAL-SECRET",
+    "redirect_uris": ["http://localhost"]
+  }
+}`
+
+func writeFile(t *testing.T, dir, name, contents string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", name, err)
+	}
+	return path
+}
+
+func writeToken(t *testing.T, dir, name string, tok *oauth2.Token) string {
+	t.Helper()
+	// #nosec G117 -- serialising a FABRICATED token into a temp directory is the
+	// whole point of this helper; no real credential is involved.
+	b, err := json.Marshal(tok)
+	if err != nil {
+		t.Fatalf("marshaling token: %v", err)
+	}
+	return writeFile(t, dir, name, string(b))
+}
+
+// A token file that EXISTS but cannot be opened — wrong ownership after a
+// container UID change, a directory permission change, an I/O error — must not
+// report as "not yet authorized". That would send the operator to re-run
+// `auth`, which cannot fix any of those, and is the exact mis-signalling
+// ErrTokenUnreadable was introduced to prevent.
+func TestClient_UnopenableTokenFileIsNotReportedAsNeedsAuth(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits are not enforced")
+	}
+	dir := t.TempDir()
+	creds := writeFile(t, dir, "credentials.json", fakeCredentials)
+	tokenPath := writeToken(t, dir, "token.json", &oauth2.Token{AccessToken: "a", RefreshToken: "r"})
+
+	// Unreadable, while very much still present.
+	if err := os.Chmod(tokenPath, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tokenPath, 0o600) })
+
+	_, err := Client(context.Background(), creds, tokenPath, discardLogger())
+	if err == nil {
+		t.Fatal("want an error for an unreadable token file")
+	}
+	if errors.Is(err, ErrNeedsAuth) {
+		t.Errorf("an unreadable token file reported as ErrNeedsAuth: %v", err)
+	}
+	if !strings.Contains(err.Error(), "opening token file") {
+		t.Errorf("error = %v, want it to say the file could not be opened", err)
+	}
+}
+
+// The three token-file conditions must stay distinguishable: each has a
+// different fix, and the CLI prints a different next step for each.
+func TestClient_TokenFileConditionsAreDistinguishable(t *testing.T) {
+	dir := t.TempDir()
+	creds := writeFile(t, dir, "credentials.json", fakeCredentials)
+
+	t.Run("missing reports ErrNeedsAuth", func(t *testing.T) {
+		_, err := Client(context.Background(), creds, filepath.Join(dir, "absent.json"), discardLogger())
+		if !errors.Is(err, ErrNeedsAuth) {
+			t.Errorf("err = %v, want ErrNeedsAuth", err)
+		}
+		if errors.Is(err, ErrTokenUnreadable) {
+			t.Error("a missing file must not also report as unreadable")
+		}
+	})
+
+	t.Run("corrupt reports ErrTokenUnreadable", func(t *testing.T) {
+		p := writeFile(t, dir, "corrupt.json", `{"access_token":"trunc`)
+		_, err := Client(context.Background(), creds, p, discardLogger())
+		if !errors.Is(err, ErrTokenUnreadable) {
+			t.Errorf("err = %v, want ErrTokenUnreadable", err)
+		}
+		if errors.Is(err, ErrNeedsAuth) {
+			t.Error("a corrupt file must not also report as needing auth")
+		}
+	})
+}
+
+// The daemon's log is a shared sink. os.Rename and os.OpenFile failures wrap
+// *os.LinkError / *os.PathError, which embed the FULL path no matter how the
+// surrounding message is formatted — so the persistence warning must redact the
+// directory, matching what warnIfInsecurePerms already does.
+func TestPersistingTokenSource_WarningDoesNotDiscloseTheSecretsDirectory(t *testing.T) {
+	// A path whose directory is distinctive enough to spot in the output, and
+	// which cannot be written to (the parent does not exist).
+	dir := filepath.Join(t.TempDir(), "very", "private", "secrets")
+	path := filepath.Join(dir, "token.json")
+
+	var logs bytes.Buffer
+	src := &persistingTokenSource{
+		inner:  &stubSource{tokens: []*oauth2.Token{{AccessToken: "a2", RefreshToken: "rt-2"}}},
+		path:   path,
+		last:   &oauth2.Token{AccessToken: "a1", RefreshToken: "rt-1"},
+		logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	}
+	if _, err := src.Token(); err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+
+	out := logs.String()
+	if out == "" {
+		t.Fatal("expected a warning about the failed persist")
+	}
+	if strings.Contains(out, dir) {
+		t.Errorf("the warning discloses the secrets directory:\n%s", out)
+	}
+	// The base name must survive, or the message is not actionable.
+	if !strings.Contains(out, "token.json") {
+		t.Errorf("the warning does not name the token file:\n%s", out)
+	}
+}
+
+func TestRedactDir(t *testing.T) {
+	cases := []struct {
+		name, dir, in, want string
+	}{
+		{"replaces the directory", "/home/u/secrets",
+			"rename /home/u/secrets/.t.tmp /home/u/secrets/t: file exists",
+			"rename …/.t.tmp …/t: file exists"},
+		{"leaves an unrelated message alone", "/home/u/secrets", "permission denied", "permission denied"},
+		{"empty dir is a no-op", "", "/a/b/c failed", "/a/b/c failed"},
+		{"root is a no-op", "/", "/a/b/c failed", "/a/b/c failed"},
+		{"dot is a no-op", ".", "./x failed", "./x failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactDir(errors.New(tc.in), tc.dir); got != tc.want {
+				t.Errorf("redactDir = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

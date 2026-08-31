@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
@@ -81,11 +82,22 @@ func Client(ctx context.Context, credentialsFile, tokenFile string, logger *slog
 
 	tok, err := tokenFromFile(tokenFile)
 	if err != nil {
-		if errors.Is(err, ErrTokenUnreadable) {
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			// The only condition that actually means "this account has never
+			// been authorized".
+			return nil, fmt.Errorf("%w: %s", ErrNeedsAuth, tokenFile)
+		case errors.Is(err, ErrTokenUnreadable):
 			// Don't include the decode error: it can quote file contents.
 			return nil, fmt.Errorf("%w: %s", ErrTokenUnreadable, tokenFile)
+		default:
+			// The file exists but could not be opened — wrong ownership after a
+			// container UID change, a directory permission change, an I/O
+			// error. Reporting any of these as "not yet authorized" would send
+			// the operator to re-run `auth`, which cannot fix them, and is the
+			// exact mis-signalling ErrTokenUnreadable was introduced to stop.
+			return nil, fmt.Errorf("opening token file %s: %w", tokenFile, err)
 		}
-		return nil, fmt.Errorf("%w: %s", ErrNeedsAuth, tokenFile)
 	}
 	if tok.RefreshToken == "" {
 		logger.Warn("token file has no refresh token; this account will stop working when its access token expires. "+
@@ -204,10 +216,11 @@ func randomURLSafe(n int) (string, error) {
 // just the code. Most users copy the whole URL rather than picking the code out
 // by hand, so both forms must work.
 //
-// When the input is a URL, its state parameter (if present) must match
+// When the input is a URL, its state parameter must be present and must match
 // wantState. A bare code carries no state to check — the operator vouches for
-// it by pasting it — but a URL that carries a MISMATCHED state is rejected,
-// since that is the shape a swapped-authorization attack takes.
+// it by pasting it — but a URL is machine-generated, so a missing or mismatched
+// state means it did not come from this run, which is the shape a
+// swapped-authorization attack takes.
 func extractAuthCode(input, wantState string) (string, error) {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
@@ -227,9 +240,16 @@ func extractAuthCode(input, wantState string) (string, error) {
 		if code == "" {
 			return "", errors.New("URL has no ?code= parameter")
 		}
-		if got := q.Get("state"); got != "" && got != wantState {
-			return "", errors.New("the redirect URL's state parameter does not match this authorization request; " +
-				"it is from a different (possibly someone else's) `auth` run — start over rather than pasting it")
+		// Require the state to be present AND to match. Google always echoes
+		// the state we sent, so a redirect URL without one did not come from
+		// this authorization request. Accepting a missing state would let an
+		// attacker-supplied URL bypass the check simply by omitting the
+		// parameter. PKCE already blocks the resulting code injection, so this
+		// is defence in depth rather than the only barrier — which is exactly
+		// why it should not be optional.
+		if q.Get("state") != wantState {
+			return "", errors.New("the redirect URL's state parameter is missing or does not match this authorization " +
+				"request; it did not come from this `auth` run — start over rather than pasting it")
 		}
 		return code, nil
 	}
@@ -281,8 +301,14 @@ func (s *persistingTokenSource) Token() (*oauth2.Token, error) {
 		toSave = &clone
 	}
 	if err := saveToken(s.path, toSave); err != nil {
+		// This runs in the daemon, so it lands in journald / Docker logs /
+		// wherever stdout is shipped. Redact the directory: os.Rename and
+		// os.OpenFile failures wrap *os.LinkError / *os.PathError, which embed
+		// the FULL path regardless of how the message above is formatted, and
+		// this package deliberately logs only base names elsewhere (see
+		// warnIfInsecurePerms).
 		s.logger.Warn("could not persist refreshed OAuth token; it will be refreshed again next start",
-			"token_file", filepath.Base(s.path), "error", err)
+			"token_file", filepath.Base(s.path), "error", redactDir(err, filepath.Dir(s.path)))
 		return tok, nil
 	}
 	s.last = toSave
@@ -299,6 +325,22 @@ func tokenChanged(old, new *oauth2.Token) bool {
 	}
 	// A rotated refresh token is the case that most needs persisting.
 	return new.RefreshToken != "" && new.RefreshToken != old.RefreshToken
+}
+
+// redactDir replaces every occurrence of dir in err's message with an ellipsis,
+// so a wrapped *os.PathError or *os.LinkError cannot disclose the on-disk
+// location of the secrets directory through a shared log sink. The base names
+// survive, which is what makes the message actionable.
+//
+// Returns a string rather than an error: the only caller is a log field, and
+// producing a new error type here would risk callers matching on the redacted
+// value instead of the real cause.
+func redactDir(err error, dir string) string {
+	msg := err.Error()
+	if dir == "" || dir == "." || dir == string(filepath.Separator) {
+		return msg
+	}
+	return strings.ReplaceAll(msg, dir, "…")
 }
 
 func tokenFromFile(path string) (*oauth2.Token, error) {

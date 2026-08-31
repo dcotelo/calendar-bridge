@@ -29,7 +29,7 @@ func TestExtractAuthCode(t *testing.T) {
 		},
 		{
 			name:  "full redirect URL",
-			input: "http://localhost:1/?code=4%2F0AVGzR1abcXYZ123&scope=https://www.googleapis.com/auth/calendar.events\n",
+			input: "http://localhost:1/?code=4%2F0AVGzR1abcXYZ123&state=test-state-value&scope=https://www.googleapis.com/auth/calendar.events\n",
 			want:  "4/0AVGzR1abcXYZ123",
 		},
 		{
@@ -38,11 +38,12 @@ func TestExtractAuthCode(t *testing.T) {
 			want:  "abc123",
 		},
 		{
-			// A URL with no state at all is still accepted: some clients omit
-			// it on the redirect, and the bare-code path has no state either.
-			name:  "redirect URL with no state parameter",
-			input: "https://localhost/?code=abc123&scope=foo\n",
-			want:  "abc123",
+			// A URL carrying no state did not come from this run: Google always
+			// echoes the state we sent. Accepting it would let an attacker
+			// bypass the check by simply omitting the parameter.
+			name:    "redirect URL with no state parameter is refused",
+			input:   "https://localhost/?code=abc123&scope=foo\n",
+			wantErr: true,
 		},
 		{
 			// The swapped-authorization shape: a code from someone else's
