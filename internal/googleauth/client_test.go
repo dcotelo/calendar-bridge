@@ -107,9 +107,12 @@ func TestClient_WarnsWhenTheTokenHasNoRefreshToken(t *testing.T) {
 func TestClient_LogsNeverCarryTokenMaterialOrFullPaths(t *testing.T) {
 	dir := t.TempDir()
 	creds := writeFile(t, dir, "credentials.json", fakeCredentials)
+	// #nosec G101 -- fabricated, and used precisely so the test can assert it
+	// never appears in a log line.
 	const accessToken = "ya29.FAKE-ACCESS-TOKEN-VALUE"
 	tokenPath := writeToken(t, dir, "token.json", &oauth2.Token{AccessToken: accessToken})
 	// Loosen permissions so the insecure-perms warning fires too.
+	// #nosec G302 -- deliberately insecure: this is the condition under test.
 	if err := os.Chmod(tokenPath, 0o644); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}

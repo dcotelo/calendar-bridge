@@ -5,6 +5,7 @@ import (
 	"io"
 	"runtime"
 	"runtime/debug"
+	"strings"
 )
 
 // Build information. goreleaser injects these via -ldflags -X; a `go install`
@@ -38,7 +39,10 @@ func buildInfo() (v, c, d string) {
 				d = s.Value
 			}
 		case "vcs.modified":
-			if s.Value == "true" {
+			// Go already suffixes Main.Version with "+dirty" when it derives a
+			// pseudo-version from a dirty tree, so only add it ourselves when
+			// it isn't there — otherwise the version reads "…+dirty+dirty".
+			if s.Value == "true" && !strings.HasSuffix(v, "+dirty") {
 				v += "+dirty"
 			}
 		}
@@ -47,17 +51,23 @@ func buildInfo() (v, c, d string) {
 }
 
 // printVersion writes a one-line-per-field build report.
+//
+// Write errors are ignored deliberately: the only caller writes to stdout, and
+// there is no useful recovery from a failed write to it — reporting the failure
+// would need the same broken stream.
 func printVersion(w io.Writer) {
 	v, c, d := buildInfo()
-	fmt.Fprintf(w, "calendar-bridge %s\n", v)
+	var b strings.Builder
+	fmt.Fprintf(&b, "calendar-bridge %s\n", v)
 	if c != "" {
-		fmt.Fprintf(w, "commit:   %s\n", c)
+		fmt.Fprintf(&b, "commit:   %s\n", c)
 	}
 	if d != "" {
-		fmt.Fprintf(w, "built:    %s\n", d)
+		fmt.Fprintf(&b, "built:    %s\n", d)
 	}
-	fmt.Fprintf(w, "go:       %s\n", runtime.Version())
-	fmt.Fprintf(w, "platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(&b, "go:       %s\n", runtime.Version())
+	fmt.Fprintf(&b, "platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	_, _ = io.WriteString(w, b.String())
 }
 
 // versionString is the short form used in JSON output.

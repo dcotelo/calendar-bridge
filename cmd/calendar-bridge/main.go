@@ -73,8 +73,10 @@ func main() {
 	}
 }
 
+// usage writes the help text. A failed write to stdout or stderr has no
+// useful recovery, so the error is deliberately ignored.
 func usage(w io.Writer) {
-	fmt.Fprint(w, `calendar-bridge - self-hosted busy-time sync across Google Calendar accounts
+	_, _ = fmt.Fprint(w, `calendar-bridge - self-hosted busy-time sync across Google Calendar accounts
 
 Usage:
   calendar-bridge auth -config config.yaml -account <name>
