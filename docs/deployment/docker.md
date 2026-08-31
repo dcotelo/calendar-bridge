@@ -26,8 +26,28 @@ makes the container look in `/app/secrets/personal-token.json` — even if you
 mounted your secrets at `/app/config/secrets`. You get:
 
 ```
-setting up: account personal: reading credentials file secrets/personal-credentials.json: open secrets/personal-credentials.json: no such file or directory
+setting up: account personal: reading credentials file personal-credentials.json: no such file or directory
 ```
+
+Note what the message does **not** tell you: the path it tried. These errors go
+to `docker logs`, so they name only the file's base name and never the
+directory — which means this error looks identical whether your path was
+relative, absolute-but-wrong, or simply not mounted. You cannot diagnose this
+one by reading the error more carefully. Check it from the host instead — the
+image is distroless and has no shell, so there is nothing to `exec` into, and
+the mounted directory *is* what the container sees:
+
+```bash
+# 1. What paths does the config name? They must start with /app/.
+grep -E 'credentials_file|token_file' ~/calendar-bridge/config/config.yaml
+
+# 2. Are the files actually in the directory you mounted?
+ls -l ~/calendar-bridge/config/secrets/
+```
+
+If step 1 prints anything that does not start with `/app/`, that is the bug. If
+step 1 looks right and step 2 is missing the file, the file never made it into
+the mounted directory.
 
 **Use absolute container paths:**
 

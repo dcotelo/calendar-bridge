@@ -44,7 +44,11 @@ const (
 	exitConfig      = 3 // config file missing, unparseable, or invalid
 	exitAuth        = 4 // an account is unauthorized, or its token is unreadable
 	exitSyncFailure = 5 // the pass ran but at least one account or write failed
-	exitRuntime     = 6 // could not start (port in use, listener refused, etc.)
+	// exitRuntime is the catch-all for "could not begin work": a port already
+	// in use, a listener refused, an unreadable credentials file, or any other
+	// setup failure that is not specifically a config or authorization
+	// problem. The usage text lists examples, not an exhaustive set.
+	exitRuntime = 6
 )
 
 func main() {
@@ -160,7 +164,7 @@ Exit codes:
   3  configuration error
   4  an account needs authorization, or its token file is unreadable
   5  the sync pass ran but reported failures
-  6  could not start (address in use, listener refused)
+  6  could not start (unreadable credentials, address in use, listener refused)
 
 Docs: https://github.com/dcotelo/calendar-bridge
 `)

@@ -17,25 +17,33 @@ calendar**. Safe to run at any time, including while the daemon is running.
 ## `account not yet authorized`
 
 ```
-setting up: account personal: account not yet authorized, run: calendar-bridge auth -account <account-name>: /etc/calendar-bridge/secrets/personal-token.json
+setting up: account personal: account not yet authorized, run: calendar-bridge auth -account <account-name>
 ```
 
 Exit code `4`.
 
-**Cause.** The token file named in the error does not exist. Either the account
+**Cause.** The token file for that account does not exist. Either the account
 was never authorized, or the file was moved, deleted, or is being looked for at
 the wrong path.
+
+**The error names the account, not the path — deliberately.** These messages
+reach the systemd journal and `docker logs`, so they never disclose where on
+disk your credentials live. That means you cannot read the resolved path out of
+the error; you have to look at the config yourself. The commands below do that.
 
 **Diagnose.**
 
 ```bash
-# Does the file exist where the config says it should be?
-ls -l /etc/calendar-bridge/secrets/personal-token.json
-
-# What path is calendar-bridge actually resolving? Relative paths resolve
-# against the WORKING DIRECTORY, not against config.yaml.
-pwd
+# 1. What path does the config actually name for that account?
 grep -A4 'name: personal' config.yaml
+
+# 2. Does the file exist there? Substitute the token_file value from step 1.
+ls -l "$(grep -A4 'name: personal' config.yaml | sed -n 's/.*token_file: *//p')"
+
+# 3. If that path is RELATIVE, it resolves against the working directory of the
+#    process — not against config.yaml. This is the most common cause under
+#    systemd and Docker, where the working directory is not where you think.
+pwd
 ```
 
 **Fix.** Run the authorization flow for that account:
@@ -60,11 +68,13 @@ write from an older version, hand-edited, or overwritten with something else.
 This is deliberately reported differently from "not yet authorized" because the
 fix differs.
 
-**Diagnose.**
+**Diagnose.** As above, the error names the account rather than the path, so
+read the path out of the config:
 
 ```bash
+TOKEN=$(grep -A4 'name: personal' config.yaml | sed -n 's/.*token_file: *//p')
 # A valid token file is one JSON object with access_token and refresh_token.
-python3 -m json.tool < /etc/calendar-bridge/secrets/personal-token.json
+python3 -m json.tool < "$TOKEN"
 ```
 
 **Fix.** Delete it and re-authorize:
