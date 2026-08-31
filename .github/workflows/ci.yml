@@ -202,6 +202,24 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # A drift guard: the two version strings must stay equal, or this job
+      # validates a goreleaser that never runs.
+      #
+      # It runs BEFORE the goreleaser steps on purpose. Placed after them, a
+      # drifted pin would have already validated and snapshot-built with the
+      # wrong version — reporting a green check for a goreleaser that release.yml
+      # does not use — and only then failed. Fail before doing the wrong work.
+      - name: the pinned goreleaser version matches release.yml
+        run: |
+          ci_v=$(grep -oE 'version: "[0-9.]+"' .github/workflows/ci.yml | sort -u)
+          rel_v=$(grep -oE 'version: "[0-9.]+"' .github/workflows/release.yml | sort -u)
+          if [ "$ci_v" != "$rel_v" ]; then
+            echo "goreleaser version drift:"
+            echo "  ci.yml:      $ci_v"
+            echo "  release.yml: $rel_v"
+            exit 1
+          fi
+          echo "ok: both pin $ci_v"
       # The release workflow only runs on a tag, so until this job existed a
       # broken .goreleaser.yml was discovered DURING a release — the worst
       # moment, and unfixable without cutting another tag. A snapshot build
@@ -220,16 +238,3 @@ jobs:
           distribution: goreleaser
           version: "2.12.7"
           args: build --snapshot --clean
-      # A drift guard: the two version strings must stay equal, or this job
-      # validates a goreleaser that never runs.
-      - name: the pinned goreleaser version matches release.yml
-        run: |
-          ci_v=$(grep -oE 'version: "[0-9.]+"' .github/workflows/ci.yml | sort -u)
-          rel_v=$(grep -oE 'version: "[0-9.]+"' .github/workflows/release.yml | sort -u)
-          if [ "$ci_v" != "$rel_v" ]; then
-            echo "goreleaser version drift:"
-            echo "  ci.yml:      $ci_v"
-            echo "  release.yml: $rel_v"
-            exit 1
-          fi
-          echo "ok: both pin $ci_v"
