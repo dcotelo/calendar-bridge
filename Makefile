@@ -29,8 +29,10 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.dat
 
 .PHONY: help
 help: ## Show this help
-	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
-	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+	@# Plain ERE: `.*?` is a PCRE lazy quantifier, and POSIX leaves adjacent
+	@# duplication operators undefined, so it is only portable by accident.
+	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | \
+	  awk 'BEGIN {FS = ":.*## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: build
 build: ## Build the binary into bin/
