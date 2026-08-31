@@ -100,10 +100,19 @@ func (*Server) Handler() http.Handler
 |---|---|---|---|
 | `auth` | `-config` (default `config.yaml`), `-account` (required) | Interactive OAuth2, writes token file | 0 ok; 1 missing `-account`, config load fail, unknown account, auth fail |
 | `sync-once` | `-config` | One pass, then exit | 0 ok **and** on SIGINT/SIGTERM mid-pass; 1 setup fail or sync error |
-| `run` | `-config` | Poll loop (+ optional push) until signal | 0 on signal; 1 setup or webhook-bind failure; 2 invalid flag parsing |
+| `run` | `-config` | Poll loop (+ optional push) until signal | 0 on signal; 1 setup or webhook-bind failure |
 | `ui` | `-config` | Serve loopback config UI | 0 on signal; 1 config load fail, `web_ui.enabled=false`, non-loopback bind, listen error |
 | `help` / `-h` / `--help` | — | Usage to **stderr** | 0 |
-| *(no args / unknown)* | — | Usage to stderr | 1 |
+| *(no args / unknown command)* | — | Usage to stderr | 1 |
+| *(any subcommand, bad flag)* | — | `flag` package usage message | **2** |
+
+Exit `2` is not chosen by this code: every `FlagSet` is constructed with
+`flag.ExitOnError`, whose contract is `os.Exit(2)` on a parse error. It is
+inherited from the standard library and documented nowhere in the program.
+Verified against the audited binary: `calendar-bridge run -bogusflag` exits `2`.
+
+So the real surface is `0` / `1` / `2`, not the `0` / `1` the code appears to
+define.
 
 Absent: `-version`, `-dry-run`, `-json`, `-log-level`, `-log-format`.
 
