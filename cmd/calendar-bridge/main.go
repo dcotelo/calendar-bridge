@@ -156,10 +156,22 @@ func loadConfig(fs *flag.FlagSet, args []string) *config.Config {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "loading config: %v\n", err)
+		// config.Load embeds the config path in its error text. This is a
+		// daemon path — under systemd stderr is the journal, under Docker it is
+		// `docker logs` — so keep the layout out of it. The operator passed the
+		// path on the command line and does not need it echoed back.
+		reportConfigError()
 		os.Exit(exitConfig)
 	}
 	return cfg
+}
+
+// reportConfigError prints a stable, path-free message for an unloadable
+// config. The distinction between "missing" and "invalid" is deliberately not
+// drawn here: both are fixed by looking at the file the operator named.
+func reportConfigError() {
+	fmt.Fprintln(os.Stderr, "loading config: could not read or parse the config file "+
+		"(check the -config path and its contents)")
 }
 
 func runAuth(args []string) {
@@ -178,7 +190,7 @@ func runAuth(args []string) {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "loading config: %v\n", err)
+		reportConfigError()
 		os.Exit(exitConfig)
 	}
 
@@ -201,7 +213,11 @@ func runAuth(args []string) {
 
 	ctx := context.Background()
 	if err := googleauth.Authorize(ctx, target.CredentialsFile, target.TokenFile); err != nil {
-		fmt.Fprintf(os.Stderr, "authorizing %s: %v\n", *accountName, err)
+		// Named by ACCOUNT, which is what the operator acts on. googleauth
+		// keeps DIRECTORIES out of its errors; a bare base name may remain and
+		// is deliberately kept, because it identifies which of several token
+		// files is at fault without disclosing where they live.
+		fmt.Fprintf(os.Stderr, "authorizing account %s failed: %v\n", *accountName, err)
 		os.Exit(exitAuth)
 	}
 }
@@ -274,18 +290,23 @@ func reportSetupError(err error) int {
 // passReport is the -json shape of a single sync pass. Counts, timings and
 // account names only — no event data.
 type passReport struct {
-	Version    string   `json:"version"`
-	DryRun     bool     `json:"dry_run"`
-	OK         bool     `json:"ok"`
-	Error      string   `json:"error,omitempty"`
-	StartedAt  string   `json:"started_at"`
-	DurationMS int64    `json:"duration_ms"`
-	Created    int      `json:"created"`
-	Updated    int      `json:"updated"`
-	Deleted    int      `json:"deleted"`
-	Skipped    int      `json:"skipped"`
-	Healthy    []string `json:"healthy_accounts"`
-	Failed     []string `json:"failed_accounts,omitempty"`
+	Version string `json:"version"`
+	DryRun  bool   `json:"dry_run"`
+	OK      bool   `json:"ok"`
+	// Interrupted reports a pass cut short by SIGINT/SIGTERM. That exits 0,
+	// because it is an intentional shutdown rather than a failure — so without
+	// this a consumer could not tell it apart from a genuine sync error, which
+	// exits 5. When true, OK is true and Error is empty.
+	Interrupted bool     `json:"interrupted,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	StartedAt   string   `json:"started_at"`
+	DurationMS  int64    `json:"duration_ms"`
+	Created     int      `json:"created"`
+	Updated     int      `json:"updated"`
+	Deleted     int      `json:"deleted"`
+	Skipped     int      `json:"skipped"`
+	Healthy     []string `json:"healthy_accounts"`
+	Failed      []string `json:"failed_accounts,omitempty"`
 }
 
 func runSyncOnce(args []string) {

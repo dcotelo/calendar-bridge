@@ -604,3 +604,58 @@ func TestGoogleClient_FindBlockBySourcePropagatesListErrors(t *testing.T) {
 		t.Errorf("err = %v, want it to name the source it was querying", err)
 	}
 }
+
+// The Calendar API can return a page with NO items but a non-empty
+// nextPageToken. Stopping at the first response therefore misses an owned block
+// that exists — and the caller then inserts a SECOND block for the same source
+// event, producing a duplicate on the destination calendar.
+func TestGoogleClient_FindBlockBySourceFollowsPagination(t *testing.T) {
+	owned := evAt("blk-1", baseTime)
+	owned.ExtendedProperties = &calendar.EventExtendedProperties{Private: map[string]string{
+		ownerKey:          ownerValue,
+		sourceAccountKey:  "personal",
+		sourceCalendarKey: "primary",
+		sourceEventKey:    "evt-1",
+	}}
+
+	api := newFakeCalendarAPI(t)
+	// An empty first page carrying a token, then the block. This is the exact
+	// shape that a first-page-only lookup gets wrong.
+	api.pages = [][]*calendar.Event{
+		{},
+		{},
+		{owned},
+	}
+
+	got, err := api.client().FindBlockBySource(context.Background(), "primary", "personal", "evt-1")
+	if err != nil {
+		t.Fatalf("FindBlockBySource: %v", err)
+	}
+	if got == nil {
+		t.Fatal("returned nil despite the block existing on a later page; the caller would now " +
+			"insert a duplicate for the same source event")
+	}
+	if got.Id != "blk-1" {
+		t.Errorf("found %q, want blk-1", got.Id)
+	}
+	if len(api.listQueries) != 3 {
+		t.Errorf("made %d list calls, want 3 — pagination stopped early", len(api.listQueries))
+	}
+}
+
+// And it must stop rather than loop when the block genuinely is not there.
+func TestGoogleClient_FindBlockBySourceTerminatesWhenAbsent(t *testing.T) {
+	api := newFakeCalendarAPI(t)
+	api.pages = [][]*calendar.Event{{}, {}}
+
+	got, err := api.client().FindBlockBySource(context.Background(), "primary", "personal", "evt-1")
+	if err != nil {
+		t.Fatalf("FindBlockBySource: %v", err)
+	}
+	if got != nil {
+		t.Errorf("returned %v, want nil", got)
+	}
+	if len(api.listQueries) != 2 {
+		t.Errorf("made %d list calls, want 2", len(api.listQueries))
+	}
+}

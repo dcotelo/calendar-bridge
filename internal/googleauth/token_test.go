@@ -539,3 +539,38 @@ func TestClient_ErrorsNeverContainTheSuppliedPath(t *testing.T) {
 		assertNoPath(t, saveToken(blocked, &oauth2.Token{AccessToken: "a", RefreshToken: "r"}))
 	})
 }
+
+// The two error paths the dedicated redaction test did not reach: a malformed
+// (rather than missing) credentials file, and the interactive Authorize flow.
+func TestAuthorize_ErrorsNeverContainTheSuppliedPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "aNoThErDiStInCtIvEdIr")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	assertNoPath := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("want an error")
+		}
+		if strings.Contains(err.Error(), root) || strings.Contains(err.Error(), "aNoThErDiStInCtIvEdIr") {
+			t.Errorf("error discloses the secrets directory: %v", err)
+		}
+	}
+
+	t.Run("Authorize with a missing credentials file", func(t *testing.T) {
+		assertNoPath(t, Authorize(context.Background(),
+			filepath.Join(root, "absent.json"), filepath.Join(root, "t.json")))
+	})
+
+	t.Run("Authorize with a malformed credentials file", func(t *testing.T) {
+		bad := writeFile(t, root, "malformed.json", `{"installed": "not an object"}`)
+		assertNoPath(t, Authorize(context.Background(), bad, filepath.Join(root, "t.json")))
+	})
+
+	t.Run("Client with a malformed credentials file", func(t *testing.T) {
+		bad := writeFile(t, root, "malformed2.json", `{"installed": "not an object"}`)
+		_, err := Client(context.Background(), bad, filepath.Join(root, "t.json"), discardLogger())
+		assertNoPath(t, err)
+	})
+}

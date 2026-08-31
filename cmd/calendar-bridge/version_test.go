@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -49,5 +50,62 @@ func TestUsage_IsWrittenInFull(t *testing.T) {
 	}
 	if !strings.Contains(out, "Exit codes:") {
 		t.Error("usage text does not document the exit codes")
+	}
+}
+
+// The -json report must agree with the exit code. An interrupted pass exits 0
+// because SIGINT/SIGTERM is an intentional shutdown, not a failure — so
+// reporting ok=false with an error there would leave a consumer unable to tell
+// it apart from a genuine sync failure, which exits 5.
+func TestPassReport_InterruptedIsNotAFailure(t *testing.T) {
+	cases := []struct {
+		name        string
+		rep         passReport
+		wantOK      bool
+		wantErrText bool
+	}{
+		{
+			name:   "clean pass",
+			rep:    passReport{OK: true},
+			wantOK: true,
+		},
+		{
+			name:        "sync failure",
+			rep:         passReport{OK: false, Error: "listing events for account personal: 401"},
+			wantOK:      false,
+			wantErrText: true,
+		},
+		{
+			// Exits 0. Must not look like the row above.
+			name:   "interrupted",
+			rep:    passReport{OK: true, Interrupted: true},
+			wantOK: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(tc.rep)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got["ok"] != tc.wantOK {
+				t.Errorf("ok = %v, want %v", got["ok"], tc.wantOK)
+			}
+			_, hasErr := got["error"]
+			if hasErr != tc.wantErrText {
+				t.Errorf("error field present = %v, want %v", hasErr, tc.wantErrText)
+			}
+			// interrupted is omitempty, so it appears only when true — that is
+			// what lets a consumer branch on it.
+			_, hasInterrupted := got["interrupted"]
+			if hasInterrupted != tc.rep.Interrupted {
+				t.Errorf("interrupted field present = %v, want %v", hasInterrupted, tc.rep.Interrupted)
+			}
+		})
 	}
 }

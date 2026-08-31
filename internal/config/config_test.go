@@ -97,8 +97,15 @@ accounts:
 }
 
 func TestLoad_FileNotFound(t *testing.T) {
-	if _, err := Load("/nonexistent/config.yaml"); err == nil {
-		t.Error("Load() error = nil, want error for missing config file")
+	cfg, err := Load("/nonexistent/config.yaml")
+	if err == nil {
+		t.Fatal("Load() error = nil, want error for missing config file")
+	}
+	// A failed Load must never hand back a partially-populated config: a caller
+	// that ignored the error would otherwise run against defaults and no
+	// accounts.
+	if cfg != nil {
+		t.Errorf("Load() returned a config (%+v) alongside an error; it must be nil", cfg)
 	}
 }
 
