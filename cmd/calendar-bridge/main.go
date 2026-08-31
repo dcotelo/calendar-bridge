@@ -92,6 +92,20 @@ func parseFlags(fs *flag.FlagSet, args []string) {
 	err := fs.Parse(args)
 	switch {
 	case err == nil:
+		// Parse stops at the first non-flag argument and leaves the rest in
+		// Args(). No subcommand takes positional arguments — auth names its
+		// account with -account — so anything left is a typo, and silently
+		// ignoring it is dangerous rather than merely untidy: in
+		// `sync-once typo -dry-run` the parse stops at typo, -dry-run is
+		// never seen, and a real sync writes to live calendars when the
+		// operator asked for a dry run.
+		if rest := fs.Args(); len(rest) > 0 {
+			fs.SetOutput(os.Stderr)
+			_, _ = fmt.Fprintf(os.Stderr,
+				"%s: unexpected argument %q\n\nUsage of %s:\n", fs.Name(), rest[0], fs.Name())
+			fs.PrintDefaults()
+			os.Exit(exitUsage)
+		}
 		return
 	case errors.Is(err, flag.ErrHelp):
 		// Asked-for help is output, not an error.

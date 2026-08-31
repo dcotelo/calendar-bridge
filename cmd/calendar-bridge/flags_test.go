@@ -80,3 +80,72 @@ func TestFlagParsing_HelpAndErrorAreDistinguishable(t *testing.T) {
 		t.Error("an unknown flag must NOT be classified as a help request; it exits 2, not 0")
 	}
 }
+
+// flag.FlagSet.Parse stops at the first non-flag argument and leaves the rest
+// in Args() without complaining. No subcommand takes positional arguments —
+// auth names its account with -account — so anything left over is a typo.
+//
+// Ignoring it is dangerous, not merely untidy: parsing stops AT the stray
+// argument, so every flag after it is silently dropped. In
+// `sync-once typo -dry-run` the -dry-run never registers and a real sync
+// writes to live calendars when the operator asked for a dry run. These
+// assert what is left over; parseFlags turns a non-empty result into exit 2.
+func TestFlagParsing_LeftoverPositionalArgumentsAreDetected(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"flags only", []string{"-config", "x.yaml", "-dry-run"}, nil},
+		{"no args", nil, nil},
+		{"trailing typo", []string{"-config", "x.yaml", "typo"}, []string{"typo"}},
+
+		// The dangerous ordering: -dry-run is never parsed.
+		{"typo before a flag", []string{"typo", "-dry-run"}, []string{"typo", "-dry-run"}},
+
+		{"bare subcommand-looking word", []string{"status"}, []string{"status"}},
+		{"terminator then a flag-like word", []string{"--", "-h"}, []string{"-h"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := flag.NewFlagSet("probe", flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			fs.String("config", "config.yaml", "path to config file")
+			fs.Bool("dry-run", false, "dry run")
+
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatalf("Parse(%q): %v", tc.args, err)
+			}
+
+			got := fs.Args()
+			if len(got) != len(tc.want) {
+				t.Fatalf("Args() = %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("Args() = %q, want %q", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// The specific failure this guards, spelled out on its own: a stray argument
+// ahead of -dry-run leaves dry-run false, which would mean writing to live
+// calendars. parseFlags rejects the command before it can run.
+func TestFlagParsing_StrayArgumentSuppressesDryRun(t *testing.T) {
+	fs := flag.NewFlagSet("probe", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dryRun := fs.Bool("dry-run", false, "dry run")
+
+	if err := fs.Parse([]string{"typo", "-dry-run"}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if *dryRun {
+		t.Fatal("precondition failed: -dry-run parsed despite the leading stray argument")
+	}
+	if len(fs.Args()) == 0 {
+		t.Fatal("no leftover arguments, so parseFlags would let this run as a live sync")
+	}
+}
