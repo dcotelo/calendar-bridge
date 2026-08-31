@@ -42,6 +42,7 @@ type fakeCalendarAPI struct {
 	// Recorded request details for assertions.
 	listQueries []url.Values
 	deleteETags []string
+	updateETags []string
 	deletePaths []string
 
 	// Behaviour injection.
@@ -128,6 +129,9 @@ func (f *fakeCalendarAPI) handleDelete(w http.ResponseWriter, r *http.Request, i
 }
 
 func (f *fakeCalendarAPI) echoEvent(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method == http.MethodPut {
+		f.updateETags = append(f.updateETags, r.Header.Get("If-Match"))
+	}
 	var ev calendar.Event
 	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
 		http.Error(w, "bad body", http.StatusBadRequest)
@@ -412,7 +416,7 @@ func TestGoogleClient_InsertAndUpdateRoundTripTheEvent(t *testing.T) {
 	}
 
 	created.Start.DateTime = baseTime.Add(2 * time.Hour).Format(time.RFC3339)
-	updated, err := c.UpdateEvent(context.Background(), "primary", created.Id, created)
+	updated, err := c.UpdateEvent(context.Background(), "primary", created.Id, created, `"etag-abc"`)
 	if err != nil {
 		t.Fatalf("UpdateEvent: %v", err)
 	}
@@ -421,6 +425,25 @@ func TestGoogleClient_InsertAndUpdateRoundTripTheEvent(t *testing.T) {
 	}
 	if updated.Summary != "Busy (calendar-bridge)" {
 		t.Errorf("summary = %q, want it preserved across a full-replace update", updated.Summary)
+	}
+	// The conditional update is what makes the ownership check and the write
+	// atomic. Verified at the wire, not just at the interface.
+	if len(api.updateETags) != 1 || api.updateETags[0] != `"etag-abc"` {
+		t.Errorf("If-Match on update = %v, want it sent; without it an event that lost its owner "+
+			"tag between the read and the write would be overwritten", api.updateETags)
+	}
+}
+
+func TestGoogleClient_UpdateEventOmitsIfMatchWhenETagIsEmpty(t *testing.T) {
+	api := newFakeCalendarAPI(t)
+	c := api.client()
+
+	if _, err := c.UpdateEvent(context.Background(), "primary", "blk-1",
+		&calendar.Event{Summary: "Busy"}, ""); err != nil {
+		t.Fatalf("UpdateEvent: %v", err)
+	}
+	if len(api.updateETags) != 1 || api.updateETags[0] != "" {
+		t.Errorf("If-Match = %v, want it omitted when no ETag is known", api.updateETags)
 	}
 }
 
