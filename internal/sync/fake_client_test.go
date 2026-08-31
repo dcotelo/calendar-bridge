@@ -225,6 +225,18 @@ func (f *fakeCalendarClient) resetCounts() {
 	f.calls.insert, f.calls.update, f.calls.del = 0, 0, 0
 }
 
+// allEvents returns a snapshot of every event on the fake. Like every other
+// accessor it takes f.mu; tests must not range over f.events directly.
+func (f *fakeCalendarClient) allEvents() []*calendar.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*calendar.Event, 0, len(f.events))
+	for _, ev := range f.events {
+		out = append(out, ev)
+	}
+	return out
+}
+
 // remove deletes an event directly, bypassing sync logic, for test fixtures.
 // Every other access to f.events takes f.mu; tests must not be the exception.
 func (f *fakeCalendarClient) remove(id string) {

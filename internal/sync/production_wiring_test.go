@@ -209,32 +209,22 @@ func TestProductionWiring_NeutralModelCarriesNoEventContent(t *testing.T) {
 // and the retry layer.
 func TestProductionWiring_WriteFailuresSurfaceAndLeaveNoPartialBlock(t *testing.T) {
 	t.Run("insert failure leaves no block", func(t *testing.T) {
-		f := newFakeCalendarClient()
-		f.failInsert = errTestWrite
-		src := newFakeCalendarClient()
-		src.seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+		h := productionHarness(t, "personal", "work-acme")
+		h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+		h.fakes["work-acme"].failInsert = errTestWrite
 
-		eng := &Engine{
-			Accounts: []Account{
-				{Name: "personal", CalendarID: "primary", Client: productionStack(src, "Busy (calendar-bridge)")},
-				{Name: "work-acme", CalendarID: "primary", Client: productionStack(f, "Busy (calendar-bridge)")},
-			},
-			BlockTitle: "Busy (calendar-bridge)", LookaheadDays: 30,
-			Logger: newTestLogger(), Now: fixedClock(baseTime),
-		}
-
-		res, err := eng.SyncOnce(context.Background())
+		res, err := h.engine.SyncOnce(context.Background())
 		if err == nil {
 			t.Fatal("a failed insert must surface")
 		}
 		if res.Created != 0 {
 			t.Errorf("Created = %d, want 0", res.Created)
 		}
-		if got := len(f.ownedBlocks()); got != 0 {
+		if got := len(h.fakes["work-acme"].ownedBlocks()); got != 0 {
 			t.Errorf("work-acme holds %d blocks after a failed insert, want 0", got)
 		}
 		// Nothing untagged may be left behind either.
-		for _, ev := range f.events {
+		for _, ev := range h.fakes["work-acme"].allEvents() {
 			if !isOwnedBlock(ev) {
 				t.Errorf("a non-owned event was created on the destination: %+v", ev)
 			}
