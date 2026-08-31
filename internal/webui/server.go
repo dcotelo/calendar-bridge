@@ -88,8 +88,9 @@ type AccountStatus struct {
 	Healthy bool `json:"healthy"`
 }
 
-// Server is the webui HTTP handler set. Construct with New and mount Handler()
-// or call Serve.
+// Server is the webui HTTP handler set. Construct it with New and mount the
+// http.Handler that Handler returns; the package does not run a listener of its
+// own, so the caller controls the server's timeouts and shutdown.
 type Server struct {
 	configPath string
 	authToken  string

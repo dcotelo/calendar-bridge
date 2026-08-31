@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	stdsync "sync"
 	"syscall"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/dcotelo/calendar-bridge/internal/config"
 	"github.com/dcotelo/calendar-bridge/internal/googleauth"
+	"github.com/dcotelo/calendar-bridge/internal/metrics"
 	"github.com/dcotelo/calendar-bridge/internal/sync"
 	"github.com/dcotelo/calendar-bridge/internal/webhook"
 	"github.com/dcotelo/calendar-bridge/internal/webui"
@@ -473,6 +475,17 @@ func runSync(args []string) {
 
 	state := newSyncState(cfg.Webhook.Enabled)
 
+	// Optional operational surface: /metrics, /healthz, /readyz.
+	var reg *metrics.Registry
+	if cfg.Metrics.Enabled {
+		var err error
+		reg, err = startMetrics(ctx, cfg, logger)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "starting metrics endpoint: %v\n", err)
+			os.Exit(exitRuntime)
+		}
+	}
+
 	engine, services, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
 		os.Exit(reportSetupError(err))
@@ -526,6 +539,15 @@ func runSync(args []string) {
 		res, err := engine.SyncOnce(cycleCtx)
 		cancel()
 		state.record(res, err)
+		if reg != nil {
+			reg.Observe(metrics.Pass{
+				Started: res.Started, Duration: res.Duration(),
+				Created: res.Created, Updated: res.Updated,
+				Deleted: res.Deleted, Skipped: res.Skipped,
+				Healthy: res.HealthyAccounts, Failed: res.FailedAccounts,
+				Err: err,
+			})
+		}
 		if err != nil {
 			logger.Error("sync pass failed", "error", err)
 		}
@@ -626,6 +648,53 @@ func startWebhook(ctx context.Context, cfg *config.Config, services map[string]*
 	}()
 
 	return debouncer.C, wg.Wait, nil
+}
+
+// startMetrics binds and serves the metrics/health endpoint, shutting it down
+// when ctx is cancelled. It binds synchronously so a port conflict is reported
+// to the caller rather than swallowed in a goroutine.
+func startMetrics(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*metrics.Registry, error) {
+	var readyMaxAge time.Duration
+	if cfg.Metrics.ReadyMaxAge != "" {
+		var err error
+		readyMaxAge, err = time.ParseDuration(cfg.Metrics.ReadyMaxAge)
+		if err != nil {
+			return nil, fmt.Errorf("invalid metrics.ready_max_age %q: %w", cfg.Metrics.ReadyMaxAge, err)
+		}
+	}
+
+	v, c, _ := buildInfo()
+	reg := metrics.New(metrics.BuildInfo{Version: v, Commit: c, GoVersion: runtime.Version()}, time.Now)
+
+	srv := &http.Server{
+		Handler:           reg.Handler(metrics.Options{ReadyMaxAge: readyMaxAge}),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", cfg.Metrics.ListenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("binding metrics listener on %s: %w", cfg.Metrics.ListenAddr, err)
+	}
+
+	go func() {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("metrics server stopped", "error", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	logger.Info("metrics endpoint listening", "addr", cfg.Metrics.ListenAddr,
+		"paths", "/metrics /healthz /readyz", "ready_max_age", readyMaxAge)
+	return reg, nil
 }
 
 func runUI(args []string) {

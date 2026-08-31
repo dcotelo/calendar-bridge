@@ -31,9 +31,10 @@
 //
 // # Security
 //
-//   - Every notification's X-Goog-Channel-Token is compared, in constant time,
-//     against the configured verification token; mismatches are rejected 403
-//     before any work. This is what stops an attacker who discovers the public
+//   - Every notification's X-Goog-Channel-Token is compared against the
+//     configured verification token in constant time, over SHA-256 digests so
+//     neither the token's length nor its content leaks through response
+//     timing; mismatches are rejected 403 before any work. This is what stops an attacker who discovers the public
 //     URL from spamming forced syncs.
 //   - Notifications carry no event content, so even a forged-but-authenticated
 //     request can at worst trigger a reconcile — it can never inject data.
@@ -41,6 +42,7 @@
 package webhook
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"log/slog"
 	"net/http"
@@ -82,10 +84,11 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Authenticate via the channel token, constant-time to avoid leaking it
-	// through timing. Reject before doing any work.
-	got := req.Header.Get("X-Goog-Channel-Token")
-	if subtle.ConstantTimeCompare([]byte(got), []byte(r.token)) != 1 {
+	// Authenticate via the channel token. Compare fixed-size SHA-256 digests
+	// rather than the raw bytes: ConstantTimeCompare returns immediately when
+	// the lengths differ, so comparing raw would leak the token's length
+	// through response timing.
+	if !r.validToken(req.Header.Get("X-Goog-Channel-Token")) {
 		r.logger.Warn("rejected webhook with bad channel token",
 			"remote", req.RemoteAddr,
 			"channel", req.Header.Get("X-Goog-Channel-ID"),
@@ -109,6 +112,14 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	)
 	r.notifier.Notify()
 	w.WriteHeader(http.StatusOK)
+}
+
+// validToken compares a presented channel token against the configured one in
+// constant time, over fixed-width digests so neither length nor content leaks.
+func (r *Receiver) validToken(got string) bool {
+	a := sha256.Sum256([]byte(got))
+	b := sha256.Sum256([]byte(r.token))
+	return subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }
 
 // Debouncer coalesces a burst of Notify() calls into a single downstream
