@@ -23,9 +23,12 @@ const OwnerOnly fs.FileMode = 0o600
 // any point leaves either the previous contents or the new ones, never a
 // partial file.
 //
-// Errors deliberately name only the base of the path. These writes happen on
-// the daemon's hot path and their failures are logged; callers that report to
-// an operator's own terminal add the full path themselves.
+// Errors are PATH-FREE: they name only the base of the destination, and the
+// wrapped OS cause is stripped of its embedded paths (see pathFree). These
+// writes carry credentials, and their failures reach the daemon's stderr, which
+// under systemd is the journal and under Docker is `docker logs`. The bare
+// cause is what makes a failure actionable; the path only discloses where the
+// secrets live.
 //
 // The temp file is created in path's own directory so the rename is within one
 // filesystem (os.Rename cannot atomically cross filesystems). It is removed on
@@ -34,7 +37,7 @@ func Write(path string, data []byte, perm fs.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("creating temp file in %s: %w", filepath.Base(dir), err)
+		return fmt.Errorf("creating temp file in %s: %w", filepath.Base(dir), pathFree(err))
 	}
 	tmpName := tmp.Name()
 	// Best-effort cleanup if we bail before the rename succeeds. Removing a
@@ -46,31 +49,31 @@ func Write(path string, data []byte, perm fs.FileMode) error {
 	// silently widen it.
 	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("chmod temp file to %o: %w", perm, err)
+		return fmt.Errorf("chmod temp file to %o: %w", perm, pathFree(err))
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("writing temp file: %w", err)
+		return fmt.Errorf("writing temp file: %w", pathFree(err))
 	}
 	// fsync before the rename so the new contents are durably on disk first;
 	// otherwise a crash right after rename could leave the directory entry
 	// pointing at data that never reached the platter.
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("syncing temp file: %w", err)
+		return fmt.Errorf("syncing temp file: %w", pathFree(err))
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp file: %w", err)
+		return fmt.Errorf("closing temp file: %w", pathFree(err))
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("atomically replacing %s: %w", filepath.Base(path), err)
+		return fmt.Errorf("atomically replacing %s: %w", filepath.Base(path), pathFree(err))
 	}
 	// The rename is not durable until the PARENT DIRECTORY is synced: the file's
 	// own fsync above covers its contents, not the directory entry pointing at
 	// it. Reported but not fatal — the data is written and renamed, and failing
 	// here would discard a completed write over a durability hint.
 	if err := syncDir(dir); err != nil {
-		return fmt.Errorf("syncing directory after replacing %s: %w", filepath.Base(path), err)
+		return fmt.Errorf("syncing directory after replacing %s: %w", filepath.Base(path), pathFree(err))
 	}
 	return nil
 }

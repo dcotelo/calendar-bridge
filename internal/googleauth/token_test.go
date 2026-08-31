@@ -371,8 +371,8 @@ func TestClient_UnopenableTokenFileIsNotReportedAsNeedsAuth(t *testing.T) {
 	if errors.Is(err, ErrNeedsAuth) {
 		t.Errorf("an unreadable token file reported as ErrNeedsAuth: %v", err)
 	}
-	if !strings.Contains(err.Error(), "opening token file") {
-		t.Errorf("error = %v, want it to say the file could not be opened", err)
+	if !errors.Is(err, ErrTokenInaccessible) {
+		t.Errorf("error = %v, want ErrTokenInaccessible", err)
 	}
 }
 
@@ -457,4 +457,72 @@ func TestRedactDir(t *testing.T) {
 			}
 		})
 	}
+}
+
+// No error returned by this package may contain the on-disk path it was given.
+//
+// These errors reach the daemon's stderr, which under systemd is the journal
+// and under Docker is `docker logs` — shared sinks. The caller wraps with the
+// ACCOUNT NAME, which is what an operator acts on; the path only discloses
+// where the secrets live. This test covers every token-file condition plus the
+// credentials file.
+func TestClient_ErrorsNeverContainTheSuppliedPath(t *testing.T) {
+	// A directory name distinctive enough that any leak is unambiguous.
+	root := filepath.Join(t.TempDir(), "vErYdIsTiNcTiVeSeCrEtDiR")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	creds := writeFile(t, root, "credentials.json", fakeCredentials)
+
+	assertNoPath := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("want an error")
+		}
+		if strings.Contains(err.Error(), root) {
+			t.Errorf("error discloses the secrets directory: %v", err)
+		}
+		if strings.Contains(err.Error(), "vErYdIsTiNcTiVeSeCrEtDiR") {
+			t.Errorf("error discloses a path component: %v", err)
+		}
+	}
+
+	t.Run("missing token file", func(t *testing.T) {
+		_, err := Client(context.Background(), creds, filepath.Join(root, "absent.json"), discardLogger())
+		assertNoPath(t, err)
+	})
+
+	t.Run("corrupt token file", func(t *testing.T) {
+		p := writeFile(t, root, "corrupt.json", `{"access_token":"trunc`)
+		_, err := Client(context.Background(), creds, p, discardLogger())
+		assertNoPath(t, err)
+	})
+
+	t.Run("unopenable token file", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root: permission bits are not enforced")
+		}
+		p := writeToken(t, root, "locked.json", &oauth2.Token{AccessToken: "a", RefreshToken: "r"})
+		if err := os.Chmod(p, 0o000); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+		_, err := Client(context.Background(), creds, p, discardLogger())
+		assertNoPath(t, err)
+	})
+
+	t.Run("missing credentials file", func(t *testing.T) {
+		_, err := Client(context.Background(), filepath.Join(root, "absent-creds.json"),
+			filepath.Join(root, "t.json"), discardLogger())
+		assertNoPath(t, err)
+	})
+
+	t.Run("token write failure (rename onto a directory)", func(t *testing.T) {
+		// saveToken -> atomicfile.Write, whose rename fails against a directory.
+		blocked := filepath.Join(root, "blocked")
+		if err := os.Mkdir(blocked, 0o700); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		assertNoPath(t, saveToken(blocked, &oauth2.Token{AccessToken: "a", RefreshToken: "r"}))
+	})
 }

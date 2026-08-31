@@ -163,6 +163,10 @@ func reportSetupError(err error) {
 	switch {
 	case errors.Is(err, googleauth.ErrNeedsAuth):
 		fmt.Fprintln(os.Stderr, "\nRun the authorization flow for that account:\n  calendar-bridge auth -config <config.yaml> -account <name>")
+	case errors.Is(err, googleauth.ErrTokenInaccessible):
+		fmt.Fprintln(os.Stderr, "\nThe token file exists but could not be opened — check its ownership and\n"+
+			"permissions, and those of the directory holding it. It must be readable AND\n"+
+			"writable by the user running calendar-bridge (refreshed tokens are written back).")
 	case errors.Is(err, googleauth.ErrTokenUnreadable):
 		fmt.Fprintln(os.Stderr, "\nThe token file is present but corrupt (an interrupted write, or hand-edited).\n"+
 			"Delete it and re-run the authorization flow:\n  calendar-bridge auth -config <config.yaml> -account <name>")

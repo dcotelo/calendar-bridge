@@ -51,6 +51,13 @@ var ErrNeedsAuth = errors.New("account not yet authorized, run: calendar-bridge 
 // wrong path.
 var ErrTokenUnreadable = errors.New("token file exists but could not be read as an OAuth2 token")
 
+// ErrTokenInaccessible is returned when a token file exists but cannot be
+// opened at all — wrong ownership after a container UID change, a directory
+// permission change, an I/O error. Distinct from ErrTokenUnreadable (which
+// means "opened, but is not a token") because the fixes differ: one is a
+// filesystem problem, the other needs a fresh `auth` run.
+var ErrTokenInaccessible = errors.New("token file exists but could not be opened")
+
 // Client returns an authenticated Calendar API client for one account, using
 // the OAuth2 client credentials at credentialsFile and the cached token at
 // tokenFile.
@@ -82,21 +89,26 @@ func Client(ctx context.Context, credentialsFile, tokenFile string, logger *slog
 
 	tok, err := tokenFromFile(tokenFile)
 	if err != nil {
+		// None of these carry the token path. They travel to the daemon's
+		// stderr, which under systemd is the journal and under Docker is
+		// `docker logs` — shared sinks. The caller wraps with the ACCOUNT NAME
+		// (see buildEngine), which is what the operator actually acts on:
+		// `calendar-bridge auth -account <name>`. The path adds nothing they
+		// don't already have in their own config, and discloses where the
+		// secrets live.
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			// The only condition that actually means "this account has never
-			// been authorized".
-			return nil, fmt.Errorf("%w: %s", ErrNeedsAuth, tokenFile)
+			// The only condition that actually means "never authorized".
+			return nil, ErrNeedsAuth
 		case errors.Is(err, ErrTokenUnreadable):
-			// Don't include the decode error: it can quote file contents.
-			return nil, fmt.Errorf("%w: %s", ErrTokenUnreadable, tokenFile)
+			return nil, ErrTokenUnreadable
 		default:
-			// The file exists but could not be opened — wrong ownership after a
+			// Exists but could not be opened — wrong ownership after a
 			// container UID change, a directory permission change, an I/O
 			// error. Reporting any of these as "not yet authorized" would send
 			// the operator to re-run `auth`, which cannot fix them, and is the
 			// exact mis-signalling ErrTokenUnreadable was introduced to stop.
-			return nil, fmt.Errorf("opening token file %s: %w", tokenFile, err)
+			return nil, fmt.Errorf("%w: %w", ErrTokenInaccessible, pathFreeErr(err))
 		}
 	}
 	if tok.RefreshToken == "" {
@@ -180,7 +192,7 @@ func Authorize(ctx context.Context, credentialsFile, tokenFile string) error {
 	}
 
 	if err := saveToken(tokenFile, tok); err != nil {
-		return fmt.Errorf("saving token to %s: %w", tokenFile, err)
+		return fmt.Errorf("saving token to %s: %w", filepath.Base(tokenFile), err)
 	}
 	fmt.Printf("Token saved to %s\n", tokenFile)
 	return nil
@@ -192,11 +204,11 @@ func loadOAuthConfig(credentialsFile string) (*oauth2.Config, error) {
 	// not untrusted external input.
 	credBytes, err := os.ReadFile(credentialsFile)
 	if err != nil {
-		return nil, fmt.Errorf("reading credentials file %s: %w", credentialsFile, err)
+		return nil, fmt.Errorf("reading credentials file %s: %w", filepath.Base(credentialsFile), pathFreeErr(err))
 	}
 	config, err := google.ConfigFromJSON(credBytes, Scopes...)
 	if err != nil {
-		return nil, fmt.Errorf("parsing credentials file %s: %w", credentialsFile, err)
+		return nil, fmt.Errorf("parsing credentials file %s: %w", filepath.Base(credentialsFile), err)
 	}
 	return config, nil
 }
@@ -343,6 +355,18 @@ func redactDir(err error, dir string) string {
 	return strings.ReplaceAll(msg, dir, "…")
 }
 
+// pathFreeErr strips filesystem paths out of an OS error, keeping the cause.
+// See the equivalent in internal/atomicfile for why this matters: *fs.PathError
+// embeds the full path regardless of the wrapping format string, and these
+// errors reach shared log sinks.
+func pathFreeErr(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
+}
+
 func tokenFromFile(path string) (*oauth2.Token, error) {
 	// #nosec G304 -- path comes from the user's own config.yaml (see
 	// internal/config), not from untrusted external input.
@@ -354,12 +378,14 @@ func tokenFromFile(path string) (*oauth2.Token, error) {
 
 	tok := &oauth2.Token{}
 	if err := json.NewDecoder(f).Decode(tok); err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrTokenUnreadable, path)
+		// Deliberately does not include the decode error: it can quote file
+		// contents, i.e. the token itself.
+		return nil, ErrTokenUnreadable
 	}
 	if tok.AccessToken == "" && tok.RefreshToken == "" {
 		// Valid JSON that is not a token (e.g. "{}" left by an interrupted
 		// write from an older, non-atomic version of this code).
-		return nil, fmt.Errorf("%w: %s", ErrTokenUnreadable, path)
+		return nil, ErrTokenUnreadable
 	}
 	return tok, nil
 }
