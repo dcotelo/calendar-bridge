@@ -155,25 +155,14 @@ jobs:
           persist-credentials: false
       - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
-          args: >-
-            --no-progress
-            --max-retries 2
-            --exclude-path ./docs/assets
-            --accept 200,206,429
-            --exclude '^https://pkg\.go\.dev/github\.com/dcotelo/calendar-bridge$'
-            --exclude '^https://github\.com/dcotelo/calendar-bridge/pkgs/container/calendar-bridge$'
-            '**/*.md'
+          # Everything lives in lychee.toml, including the exclusions. A regex
+          # in this args string has to survive YAML folding AND the action's
+          # shell splitting: passed with its quotes intact, lychee receives the
+          # quote characters as part of the pattern and the exclusion silently
+          # does nothing — verified by reproducing both forms against the real
+          # binary. A config file has no quoting layer to get wrong.
+          args: --config lychee.toml '**/*.md'
           fail: true
-        # The two exclusions above are the badge targets that cannot resolve
-        # until the first release exists: pkg.go.dev has nothing to index until
-        # a version is published, and the GHCR package page does not exist
-        # until an image is pushed. Both badges still RENDER (shields.io and
-        # pkg.go.dev serve the image regardless) — it is only the link targets
-        # that 404.
-        #
-        # Remove both exclusions when v0.1.0 is tagged; leaving them in place
-        # would mean a genuinely broken badge link goes unnoticed. Tracked with
-        # the first-release item in docs/BACKLOG.md.
 
   release-config:
     name: release config

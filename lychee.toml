@@ -1,0 +1,29 @@
+# lychee link-checker configuration.
+#
+# The exclusions live here rather than in the workflow's `args` string because
+# a regex there has to survive YAML folding and the action's shell splitting:
+# passed with quotes intact, lychee receives the quote characters as part of
+# the pattern and the exclusion silently does nothing. A config file has no
+# quoting layer to get wrong.
+
+# 206 for ranged responses, 429 for hosts that rate-limit CI.
+accept = [200, 206, 429]
+max_retries = 2
+no_progress = true
+
+# Binary assets: nothing to check inside them.
+exclude_path = ["docs/assets"]
+
+exclude = [
+  # Badge targets that cannot resolve until the first release exists:
+  # pkg.go.dev has nothing to index until a version is published, and the GHCR
+  # package page does not exist until an image is pushed. Both badges still
+  # RENDER — shields.io and pkg.go.dev serve the images regardless — so it is
+  # only the link targets that 404.
+  #
+  # REMOVE BOTH when v0.1.0 is tagged. Leaving them here afterwards would mean
+  # a genuinely broken badge link goes unnoticed. Tracked with the
+  # first-release item in docs/BACKLOG.md.
+  '^https://pkg\.go\.dev/github\.com/dcotelo/calendar-bridge$',
+  '^https://github\.com/dcotelo/calendar-bridge/pkgs/container/calendar-bridge$',
+]
