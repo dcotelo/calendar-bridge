@@ -210,48 +210,88 @@ func TestHealthz_AlwaysOK(t *testing.T) {
 	}
 }
 
+// Readiness is "has a sync succeeded recently enough", which is deliberately
+// NOT the same question as liveness: /healthz stays 200 while sync is broken,
+// because restarting the process does not fix an expired token.
 func TestReadyz(t *testing.T) {
 	now := base
 	clock := func() time.Time { return now }
 
-	t.Run("not ready before the first successful pass", func(t *testing.T) {
-		r := New(testBuild(), clock)
-		if got := readyzCode(r, 10*time.Minute); got != http.StatusServiceUnavailable {
-			t.Errorf("/readyz = %d, want 503", got)
-		}
-	})
+	cases := []struct {
+		name     string
+		observe  func(r *Registry)
+		maxAge   time.Duration
+		wantCode int
+		why      string
+	}{
+		{
+			name:     "no successful pass yet",
+			observe:  func(*Registry) {},
+			maxAge:   10 * time.Minute,
+			wantCode: http.StatusServiceUnavailable,
+			why:      "a freshly started instance has not proven it can reach the API",
+		},
+		{
+			name: "a recent success",
+			observe: func(r *Registry) {
+				r.Observe(Pass{Started: now.Add(-time.Minute), Healthy: []string{"a", "b"}})
+			},
+			maxAge:   10 * time.Minute,
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "the last success has gone stale",
+			observe: func(r *Registry) {
+				r.Observe(Pass{Started: now.Add(-30 * time.Minute), Healthy: []string{"a", "b"}})
+			},
+			maxAge:   10 * time.Minute,
+			wantCode: http.StatusServiceUnavailable,
+			why:      "30 minutes old against a 10-minute threshold",
+		},
+		{
+			name: "a failed pass does not refresh readiness",
+			observe: func(r *Registry) {
+				r.Observe(Pass{Started: now.Add(-30 * time.Minute), Healthy: []string{"a", "b"}})
+				r.Observe(Pass{Started: now, Failed: []string{"a"}, Err: errors.New("boom")})
+			},
+			maxAge:   10 * time.Minute,
+			wantCode: http.StatusServiceUnavailable,
+			why:      "a pass that ran but failed must not count as a success",
+		},
+		{
+			name: "a failed pass does not un-ready a recent success",
+			observe: func(r *Registry) {
+				r.Observe(Pass{Started: now.Add(-time.Minute), Healthy: []string{"a", "b"}})
+				r.Observe(Pass{Started: now, Failed: []string{"a"}, Err: errors.New("boom")})
+			},
+			maxAge:   10 * time.Minute,
+			wantCode: http.StatusOK,
+			why:      "readiness tracks the last SUCCESS, so one transient failure must not flap it",
+		},
+		{
+			name:     "a zero threshold disables the staleness check",
+			observe:  func(*Registry) {},
+			maxAge:   0,
+			wantCode: http.StatusOK,
+			why:      "opting out must not then fail closed on a never-synced instance",
+		},
+	}
 
-	t.Run("ready after a recent success", func(t *testing.T) {
-		r := New(testBuild(), clock)
-		r.Observe(Pass{Started: now.Add(-time.Minute), Healthy: []string{"a", "b"}})
-		if got := readyzCode(r, 10*time.Minute); got != http.StatusOK {
-			t.Errorf("/readyz = %d, want 200", got)
-		}
-	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New(testBuild(), clock)
+			tc.observe(r)
 
-	t.Run("not ready once the last success goes stale", func(t *testing.T) {
-		r := New(testBuild(), clock)
-		r.Observe(Pass{Started: now.Add(-30 * time.Minute), Healthy: []string{"a", "b"}})
-		if got := readyzCode(r, 10*time.Minute); got != http.StatusServiceUnavailable {
-			t.Errorf("/readyz = %d for a 30-minute-old success against a 10-minute threshold, want 503", got)
-		}
-	})
-
-	t.Run("a failed pass does not refresh readiness", func(t *testing.T) {
-		r := New(testBuild(), clock)
-		r.Observe(Pass{Started: now.Add(-30 * time.Minute), Healthy: []string{"a", "b"}})
-		r.Observe(Pass{Started: now, Failed: []string{"a"}, Err: errors.New("boom")})
-		if got := readyzCode(r, 10*time.Minute); got != http.StatusServiceUnavailable {
-			t.Errorf("/readyz = %d, want 503 — a failed pass must not count as readiness", got)
-		}
-	})
-
-	t.Run("threshold of zero disables the staleness check", func(t *testing.T) {
-		r := New(testBuild(), clock)
-		if got := readyzCode(r, 0); got != http.StatusOK {
-			t.Errorf("/readyz = %d with the check disabled, want 200", got)
-		}
-	})
+			got := readyzCode(r, tc.maxAge)
+			if got != tc.wantCode {
+				msg := "/readyz = %d, want %d"
+				if tc.why != "" {
+					msg += " (" + tc.why + ")"
+				}
+				t.Errorf(msg, got, tc.wantCode)
+			}
+		})
+	}
 }
 
 func readyzCode(r *Registry, maxAge time.Duration) int {
