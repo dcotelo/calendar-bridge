@@ -65,7 +65,16 @@ test-race: ## Run the test suite under the race detector
 cover: ## Run tests with coverage and enforce the gates
 	$(GO) test ./... -race -coverprofile=$(COVEROUT) -covermode=atomic
 	@$(GO) tool cover -func=$(COVEROUT) | tail -1
-	@total=$$($(GO) tool cover -func=$(COVEROUT) | awk '/^total:/ {gsub(/%/,"",$$3); print int($$3)}'); \
+	@# Each coverage number is produced by a command whose exit status a pipe
+	@# would discard. An empty total then takes the else branch and prints
+	@# "ok total %" — a gate that passes when it could not measure anything is
+	@# worse than no gate, because it is trusted. Capture the status, then
+	@# require the value to be an integer before comparing.
+	@cover_raw=$$($(GO) tool cover -func=$(COVEROUT)) || { echo "FAIL  could not read $(COVEROUT)"; exit 1; }; \
+	total=$$(printf '%s\n' "$$cover_raw" | awk '/^total:/ {gsub(/%/,"",$$3); print int($$3)}'); \
+	case "$$total" in \
+	  ''|*[!0-9]*) echo "FAIL  total coverage unreadable (got '$$total')"; exit 1;; \
+	esac; \
 	fail=0; \
 	if [ "$$total" -lt "$(COVERAGE_MIN)" ]; then \
 	  echo "FAIL  total $$total% < $(COVERAGE_MIN)%"; fail=1; \
@@ -74,8 +83,13 @@ cover: ## Run tests with coverage and enforce the gates
 	fi; \
 	for spec in $(PKG_FLOORS); do \
 	  pkg=$${spec%%:*}; floor=$${spec##*:}; \
-	  got=$$($(GO) test ./$$pkg/ -cover 2>/dev/null | sed -n 's/.*coverage: \([0-9]*\)\.[0-9]*%.*/\1/p'); \
-	  if [ -z "$$got" ]; then echo "FAIL  $$pkg: could not read coverage"; fail=1; continue; fi; \
+	  if ! out=$$($(GO) test ./$$pkg/ -cover 2>&1); then \
+	    echo "FAIL  $$pkg: tests failed, coverage not trusted"; fail=1; continue; \
+	  fi; \
+	  got=$$(printf '%s\n' "$$out" | sed -n 's/.*coverage: \([0-9]*\)\.[0-9]*%.*/\1/p'); \
+	  case "$$got" in \
+	    ''|*[!0-9]*) echo "FAIL  $$pkg: could not read coverage"; fail=1; continue;; \
+	  esac; \
 	  if [ "$$got" -lt "$$floor" ]; then \
 	    echo "FAIL  $$pkg $$got% < $$floor%"; fail=1; \
 	  else \
