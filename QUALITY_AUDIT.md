@@ -689,6 +689,18 @@ A setup failure exited before the report was written, so `-json` produced empty
 stdout on the most common failure. A machine-readable flag has to be
 machine-readable on the error path too.
 
+The fix originally landed in an unrelated commit on the docs branch, several
+PRs away from the CLI it changes. That is a process failure worth recording:
+during review of the CLI PR the code there still had the bug, this entry gave
+no way to tell where it had been fixed, and it was diagnosed a second time as
+though it were new. The behaviour now lives with the CLI, covered by a
+process-level test that runs the real binary; the second diagnosis did improve
+it (the reported error is path-free, and the config-load failure is covered as
+well as the setup failure).
+
+One concern per commit is not tidiness. A fix filed under an unrelated subject
+is invisible to the next person who looks — including the person who wrote it.
+
 #### N-05 — `version` reported `+dirty+dirty`
 
 **Nit.** Found in the first end-to-end run. Go already suffixes a pseudo-version
