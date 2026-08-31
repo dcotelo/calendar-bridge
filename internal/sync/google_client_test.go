@@ -50,6 +50,11 @@ type fakeCalendarAPI struct {
 	deleteStatus int // status for Events.Delete; 0 means 204
 	listFailures int32
 	listStatus   int // status returned while listFailures remains
+	// writeFailures / writeStatus do the same for Events.Insert and
+	// Events.Update, so the write paths' failure handling is exercised at the
+	// wire and not only against synthetic error values.
+	writeFailures int32
+	writeStatus   int
 }
 
 func newFakeCalendarAPI(t *testing.T) *fakeCalendarAPI {
@@ -131,6 +136,10 @@ func (f *fakeCalendarAPI) handleDelete(w http.ResponseWriter, r *http.Request, i
 func (f *fakeCalendarAPI) echoEvent(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method == http.MethodPut {
 		f.updateETags = append(f.updateETags, r.Header.Get("If-Match"))
+	}
+	if f.writeStatus != 0 && atomic.AddInt32(&f.writeFailures, -1) >= 0 {
+		writeAPIError(w, f.writeStatus, "write failed")
+		return
 	}
 	var ev calendar.Event
 	if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
@@ -505,5 +514,67 @@ func TestGoogleClient_HonoursContextCancellation(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want it to wrap context.Canceled", err)
+	}
+}
+
+// The retry policy must behave the same on WRITES as it does on reads, and the
+// distinction matters more here: retrying a write that already succeeded is how
+// duplicates appear, so the classification has to be right at the wire and not
+// only against synthetic error values.
+func TestGoogleClient_WriteRetryClassification(t *testing.T) {
+	block := func() *calendar.Event {
+		return &calendar.Event{
+			Summary: "Busy (calendar-bridge)",
+			Start:   &calendar.EventDateTime{DateTime: baseTime.Format(time.RFC3339)},
+			End:     &calendar.EventDateTime{DateTime: baseTime.Add(time.Hour).Format(time.RFC3339)},
+			ExtendedProperties: &calendar.EventExtendedProperties{Private: map[string]string{
+				ownerKey:          ownerValue,
+				sourceAccountKey:  "personal",
+				sourceCalendarKey: "primary",
+				sourceEventKey:    "evt-1",
+			}},
+		}
+	}
+
+	cases := []struct {
+		name         string
+		status       int
+		failures     int32
+		wantErr      bool
+		wantAttempts int
+	}{
+		{"500 is retried and then succeeds", http.StatusInternalServerError, 2, false, 3},
+		{"429 is retried and then succeeds", http.StatusTooManyRequests, 1, false, 2},
+		// A 4xx other than 429 will not succeed on retry and usually means a
+		// config or auth problem the operator must fix; retrying burns quota
+		// and delays the signal.
+		{"403 is not retried", http.StatusForbidden, 100, true, 1},
+		{"400 is not retried", http.StatusBadRequest, 100, true, 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			api := newFakeCalendarAPI(t)
+			api.writeStatus = tc.status
+			atomic.StoreInt32(&api.writeFailures, tc.failures)
+
+			c := NewRetryingClient(api.client(),
+				RetryPolicy{MaxAttempts: 4, BaseBackoff: time.Millisecond, MaxBackoff: 5 * time.Millisecond},
+				newTestLogger(), "test")
+
+			_, err := c.InsertEvent(context.Background(), "primary", block())
+			if tc.wantErr && err == nil {
+				t.Fatalf("InsertEvent succeeded; want an error for %d", tc.status)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("InsertEvent: %v", err)
+			}
+			// writeFailures counts down from the seeded value, so the number of
+			// attempts is derivable from what remains.
+			attempts := int(tc.failures - atomic.LoadInt32(&api.writeFailures))
+			if attempts != tc.wantAttempts {
+				t.Errorf("made %d insert attempts, want %d", attempts, tc.wantAttempts)
+			}
+		})
 	}
 }
