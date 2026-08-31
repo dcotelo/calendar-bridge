@@ -728,3 +728,87 @@ var errTestFetch = &testError{"simulated fetch failure"}
 type testError struct{ msg string }
 
 func (e *testError) Error() string { return e.msg }
+
+// ---- classification edges ----
+
+// A source event that is skipped (Free/declined) on an account that then FAILS
+// to fetch must not have its blocks collected elsewhere. The skip and the
+// failure are different reasons for an event to be absent from the live set,
+// and only one of them means "it is gone".
+func TestSyncOnce_FailedSourceAccountPreservesBlocksEvenForSkippedEvents(t *testing.T) {
+	h := newHarness(t, "personal", "work-acme", "work-globex")
+	h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+	h.run(t)
+
+	if got := len(h.fakes["work-acme"].ownedBlocks()); got != 1 {
+		t.Fatalf("setup: want 1 block on work-acme, got %d", got)
+	}
+
+	// personal now fails to fetch entirely.
+	h.fakes["personal"].failList = errTestFetch
+	res, err := h.engine.SyncOnce(context.Background())
+	if err == nil {
+		t.Fatal("want an error for the failed account")
+	}
+	if res.Deleted != 0 {
+		t.Errorf("Deleted = %d, want 0 — a block must never be collected because its source account failed", res.Deleted)
+	}
+	if got := len(h.fakes["work-acme"].ownedBlocks()); got != 1 {
+		t.Errorf("work-acme has %d blocks, want the block preserved", got)
+	}
+}
+
+// An owned block that is ALSO transparent must still be classified as owned.
+// Classification order matters: checking transparency first would drop our own
+// block out of the owned set, making it invisible to GC forever.
+func TestSyncOnce_OwnedBlockThatIsAlsoTransparentStaysOwned(t *testing.T) {
+	h := newHarness(t, "personal", "work-acme")
+	start := baseTime.Add(24 * time.Hour)
+	blk := &calendar.Event{
+		Summary:      "Busy (calendar-bridge)",
+		Transparency: "opaque",
+		Visibility:   "private",
+		Start:        &calendar.EventDateTime{DateTime: start.Format(time.RFC3339), TimeZone: "UTC"},
+		End:          &calendar.EventDateTime{DateTime: start.Add(time.Hour).Format(time.RFC3339), TimeZone: "UTC"},
+		ExtendedProperties: &calendar.EventExtendedProperties{Private: map[string]string{
+			ownerKey:          ownerValue,
+			sourceAccountKey:  "personal",
+			sourceCalendarKey: "primary",
+			sourceEventKey:    "gone-1",
+		}},
+	}
+	blk.Transparency = "transparent" // someone edited it in the UI
+	h.fakes["work-acme"].seed("blk-1", blk)
+	h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+
+	res := h.run(t)
+
+	// Its source is gone, so it must be collected — which only happens if it
+	// was classified as owned despite being transparent.
+	if res.Deleted != 1 {
+		t.Errorf("Deleted = %d, want 1 — a transparent owned block must still be collected", res.Deleted)
+	}
+}
+
+// A real event carrying a source identity but NO owner tag must be propagated
+// as a normal event, not treated as one of ours.
+func TestSyncOnce_SourceTaggedButUnownedEventIsTreatedAsReal(t *testing.T) {
+	h := newHarness(t, "personal", "work-acme")
+	impostor := at("evt-1", 48*time.Hour, time.Hour)
+	impostor.ExtendedProperties = &calendar.EventExtendedProperties{Private: map[string]string{
+		sourceAccountKey:  "work-acme",
+		sourceCalendarKey: "primary",
+		sourceEventKey:    "whatever",
+		// no ownerKey
+	}}
+	h.fakes["personal"].seed("evt-1", impostor)
+
+	res := h.run(t)
+
+	if res.Created != 1 {
+		t.Errorf("Created = %d, want 1 — an untagged event is a real event and must propagate", res.Created)
+	}
+	if got := len(h.fakes["personal"].ownedBlocks()); got != 0 {
+		t.Errorf("the impostor was counted as an owned block")
+	}
+}
