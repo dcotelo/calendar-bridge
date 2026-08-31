@@ -44,7 +44,11 @@ const (
 	exitConfig      = 3 // config file missing, unparseable, or invalid
 	exitAuth        = 4 // an account is unauthorized, or its token is unreadable
 	exitSyncFailure = 5 // the pass ran but at least one account or write failed
-	exitRuntime     = 6 // could not start (port in use, listener refused, etc.)
+	// exitRuntime is the catch-all for "could not begin work": a port already
+	// in use, a listener refused, an unreadable credentials file, or any other
+	// setup failure that is not specifically a config or authorization
+	// problem. The usage text lists examples, not an exhaustive set.
+	exitRuntime = 6
 )
 
 func main() {
@@ -160,7 +164,7 @@ Exit codes:
   3  configuration error
   4  an account needs authorization, or its token file is unreadable
   5  the sync pass ran but reported failures
-  6  could not start (address in use, listener refused)
+  6  could not start (unreadable credentials, address in use, listener refused)
 
 Docs: https://github.com/dcotelo/calendar-bridge
 `)
@@ -342,18 +346,13 @@ type passReport struct {
 // err is safe to include: config.Load and the googleauth setup errors are
 // path-free by construction, which their own tests assert.
 func emitFailureReport(dryRun bool, err error) {
-	rep := passReport{
+	writeJSONReport(passReport{
 		Version:   versionString(),
 		DryRun:    dryRun,
 		OK:        false,
 		Error:     err.Error(),
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if encErr := enc.Encode(rep); encErr != nil {
-		fmt.Fprintf(os.Stderr, "writing JSON report: %v\n", encErr)
-	}
+	})
 }
 
 // wasInterrupted reports whether a failed pass was cut short by SIGINT/SIGTERM
@@ -441,12 +440,7 @@ func runSyncOnce(args []string) {
 		if syncErr != nil && !interrupted {
 			rep.Error = syncErr.Error()
 		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if encErr := enc.Encode(rep); encErr != nil {
-			fmt.Fprintf(os.Stderr, "writing JSON report: %v\n", encErr)
-			os.Exit(exitRuntime)
-		}
+		writeJSONReport(rep)
 	}
 
 	switch {
@@ -461,6 +455,16 @@ func runSyncOnce(args []string) {
 		logger.Info("sync pass complete", "dry_run", *dryRun,
 			"created", res.Created, "updated", res.Updated, "deleted", res.Deleted,
 			"skipped", res.Skipped, "duration", res.Duration())
+	}
+}
+
+// writeJSONReport emits the pass report as the single JSON object on stdout.
+func writeJSONReport(rep passReport) {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(rep); err != nil {
+		fmt.Fprintf(os.Stderr, "writing JSON report: %v\n", err)
+		os.Exit(exitRuntime)
 	}
 }
 

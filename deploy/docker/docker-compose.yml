@@ -1,0 +1,65 @@
+# docker compose deployment for calendar-bridge.
+#
+#   docker compose up -d
+#   docker compose logs -f
+#
+# Read docs/deployment/docker.md first. The one thing that catches everyone:
+# the paths inside config.yaml are resolved against the container's working
+# directory (/app), NOT against config.yaml. Use absolute container paths:
+#
+#   token_file: /app/config/secrets/personal-token.json
+
+services:
+  calendar-bridge:
+    image: ghcr.io/dcotelo/calendar-bridge:latest
+    container_name: calendar-bridge
+    restart: unless-stopped
+
+    # Must match the owner of ./config on the host, or the container cannot
+    # read the 0600 token files. The image defaults to 65532 (distroless
+    # "nonroot"); override with:
+    #   CB_UID=$(id -u) CB_GID=$(id -g) docker compose up -d
+    user: "${CB_UID:-65532}:${CB_GID:-65532}"
+
+    volumes:
+      # NOT read-only: refreshed and rotated OAuth tokens are written back.
+      # A read-only mount means the token cache goes stale and every start
+      # spends an extra refresh round trip.
+      - ./config:/app/config
+
+    environment:
+      - TZ=${TZ:-UTC}
+
+    # --- hardening ---------------------------------------------------------
+    read_only: true          # the rootfs; the config volume stays writable
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # Small and steady. The limits are generous for what this does; they exist
+    # to bound a runaway rather than to squeeze it.
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.50"
+        reservations:
+          memory: 32M
+
+    # Requires metrics.enabled: true in config.yaml. The image is distroless
+    # and has no shell or curl, so the healthcheck uses the binary itself.
+    healthcheck:
+      test: ["CMD", "/app/calendar-bridge", "version"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

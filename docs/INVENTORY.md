@@ -3,6 +3,12 @@
 Working artifact produced during the Phase 1 audit recon. Everything here was
 read out of the source at commit `85c4afc`; nothing is inferred from the README.
 
+> **This is a snapshot of the pre-audit tree.** It is kept because
+> [`QUALITY_AUDIT.md`](../QUALITY_AUDIT.md) references it as the baseline the
+> findings were measured against. For the current state, read
+> [ARCHITECTURE.md](ARCHITECTURE.md) and [CONFIGURATION.md](CONFIGURATION.md);
+> for what changed, read the audit's "What changed after the audit" section.
+
 ## 1. File tree
 
 ```text

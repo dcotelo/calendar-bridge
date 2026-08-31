@@ -1,0 +1,156 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calendar-bridge
+spec:
+  # Exactly one. A second replica would double your Google API usage for no
+  # benefit: every operation is idempotent, so the second does the same work and
+  # writes nothing extra — but it still pays for every read.
+  replicas: 1
+  strategy:
+    # Never run two at once, even briefly during a rollout.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: calendar-bridge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: calendar-bridge
+      annotations:
+        # Roll the pod when the config changes. Update this after editing the
+        # Secret, or use a kustomize secretGenerator, which hashes it for you.
+        checksum/config: "replace-me-when-the-secret-changes"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Why this init container exists.
+      #
+      # Kubernetes mounts a Secret read-only and there is no way to make it
+      # writable. calendar-bridge re-persists OAuth tokens when Google refreshes
+      # them (hourly) or rotates them. Against a read-only mount those writes
+      # fail — non-fatally, they are logged and the pass continues, but the
+      # cache never updates.
+      #
+      # So: copy the Secret into an emptyDir the main container can write.
+      #
+      # The trade-off, stated plainly: the emptyDir dies with the pod, so a
+      # ROTATED refresh token is lost on restart. That is fine when your OAuth
+      # consent screen is in "In production" status, where Google does not
+      # rotate refresh tokens. It is NOT fine in "Testing" status, where refresh
+      # tokens rotate and expire after seven days — use a PersistentVolumeClaim
+      # instead. See docs/deployment/kubernetes.md.
+      initContainers:
+        - name: stage-config
+          image: busybox:1.37.0
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              cp /secret/* /app/config/
+              chmod 600 /app/config/*
+              ls -l /app/config/
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+          volumeMounts:
+            - name: secret
+              mountPath: /secret
+              readOnly: true
+            - name: config
+              mountPath: /app/config
+
+      containers:
+        - name: calendar-bridge
+          image: ghcr.io/dcotelo/calendar-bridge:latest
+          args:
+            - run
+            - -config
+            - /app/config/config.yaml
+
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop: ["ALL"]
+
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              # No CPU limit on purpose: this is a bursty, mostly-idle workload
+              # and a CPU limit only adds throttling latency to a pass. The
+              # memory limit bounds a genuine runaway.
+              memory: 128Mi
+
+          # Liveness deliberately does NOT depend on sync health: an instance
+          # that cannot reach Google should keep retrying with backoff, not be
+          # killed and restarted. A restart fixes nothing and loses the backoff.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # Readiness DOES: it fails once the last successful sync is older than
+          # metrics.ready_max_age. There is no traffic to gate, so this is a
+          # status signal for humans and dashboards.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+            - name: tmp
+              mountPath: /tmp
+
+      # SIGTERM cancels the in-flight pass and the process exits promptly. A
+      # partial pass is safe — every operation is idempotent — so there is
+      # nothing to drain and a short grace period is enough.
+      terminationGracePeriodSeconds: 30
+
+      volumes:
+        - name: config
+          emptyDir:
+            sizeLimit: 4Mi
+        - name: secret
+          secret:
+            secretName: calendar-bridge-config
+            defaultMode: 0400
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

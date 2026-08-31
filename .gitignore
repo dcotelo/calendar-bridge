@@ -19,3 +19,5 @@ secrets/
 coverage.out
 bin/
 dist/
+scripts/screenshots/node_modules/
+scripts/screenshots/package-lock.json

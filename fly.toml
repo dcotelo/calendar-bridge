@@ -1,15 +1,15 @@
 # Fly.io app configuration for calendar-bridge.
 #
-# calendar-bridge is a long-running poller, not an HTTP service, so no
-# [[services]] block with exposed ports is needed — just one small always-on
-# machine.
+# Read docs/deployment/fly.md before deploying — in particular the note about
+# absolute paths, which is the one thing that reliably catches people.
 #
-# Setup:
-#   fly launch --no-deploy   # creates the app, adjust name/region as asked
-#   fly volumes create cb_config --size 1 -a <your-app-name>
-#   # Upload config.yaml + secrets/ into the volume (see README "Fly.io"
-#   # section) before the first deploy — the container expects
-#   # /app/config/config.yaml and /app/config/secrets/*.
+# Setup, in order:
+#   calendar-bridge auth ...              # locally, first: the flow needs a browser
+#   fly launch --no-deploy                # creates the app; adjust name/region
+#   fly volumes create cb_config --size 1 -a <your-app>
+#   fly deploy                            # fails: the volume has no config yet
+#   fly ssh console -a <your-app> -C "mkdir -p /app/config/secrets"
+#   fly ssh sftp shell -a <your-app>      # upload config.yaml and secrets/
 #   fly deploy
 
 app = "calendar-bridge"
@@ -24,3 +24,13 @@ primary_region = "iad"
 [[vm]]
   size = "shared-cpu-1x"
   memory = "256mb"
+
+# There is deliberately NO [[services]] block.
+#
+# calendar-bridge is a background poller, not an HTTP service. With no services
+# declared, Fly publishes no ports and the machine is unreachable from the
+# internet, which is exactly what we want. The optional metrics endpoint binds
+# loopback and is reached with `fly proxy 9090:9090`.
+#
+# There is also deliberately no auto_stop_machines: there is no inbound request
+# to wake a stopped machine, so auto-stop would just mean it stops syncing.
