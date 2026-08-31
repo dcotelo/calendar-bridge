@@ -65,11 +65,22 @@ ReadWritePaths=%h/.config/calendar-bridge
 # Outbound network only; no listening sockets are needed unless you enable the
 # web UI or the metrics endpoint, both of which bind loopback.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-IPAddressDeny=any
-IPAddressAllow=localhost
-# Google's API ranges are not stable, so a strict allowlist is impractical.
-# Comment the two lines above out if you want to restrict egress at the
-# firewall instead, which is the better place for it.
+
+# Egress restriction is deliberately NOT enabled here, and the two directives
+# below are left commented on purpose.
+#
+# calendar-bridge must reach accounts.google.com and *.googleapis.com. With
+# `IPAddressDeny=any` plus `IPAddressAllow=localhost` active, every sync fails
+# with a network error and the daemon looks broken for a reason that has
+# nothing to do with its configuration. Google's API ranges are not stable, so
+# a correct static allowlist is not achievable.
+#
+# If you want to restrict egress, do it at the firewall, which can resolve and
+# follow those ranges. If you enable these anyway, you must allow Google's
+# current ranges yourself and keep them updated.
+#
+#IPAddressDeny=any
+#IPAddressAllow=localhost
 
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
