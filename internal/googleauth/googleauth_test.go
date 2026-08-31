@@ -3,6 +3,7 @@ package googleauth
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"golang.org/x/oauth2"
@@ -106,6 +107,13 @@ func TestExtractAuthCode(t *testing.T) {
 // file — it silently leaves an existing file's permissions untouched
 // otherwise.
 func TestSaveToken_TightensExistingFilePermissions(t *testing.T) {
+	// Windows has no Unix owner/group/other bits: os.Chmod only toggles the
+	// read-only flag, and Stat reports 0666. The 0600 intent is meaningless
+	// there, which is why checkSecretPerms skips the check on Windows too.
+	// Asserting it would fail for a reason unrelated to the behaviour.
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not meaningful on Windows")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "token.json")
 
