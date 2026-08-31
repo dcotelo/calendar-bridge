@@ -184,13 +184,27 @@ jobs:
           # have let the guard measure one version's traversal while the check
           # performed another's — the guard acquiring the exact defect it
           # exists to catch.
+          # The dump runs on its own so its failure is reported as its own
+          # failure. A lychee that cannot even enumerate inputs is a different
+          # problem from a missing file, and should not be reported as one.
+          if ! lychee --config lychee.toml --dump-inputs . .github > /tmp/dump.txt 2>/tmp/dump.err; then
+            echo "lychee --dump-inputs failed:"
+            cat /tmp/dump.err
+            exit 1
+          fi
+
+          # Filtering is separate, and its status is deliberately ignored: this
+          # shell runs with -o pipefail, so a grep that matches nothing would
+          # abort the step here and the explicit diagnostic below would never
+          # print. Failing closed is right; failing closed WITHOUT saying why
+          # defeats the point of the guard.
+          #
           # Normalise to repo-relative paths: --dump-inputs may emit "./x.md"
           # or an absolute path under the workspace, and either would otherwise
           # look like a missing file.
-          lychee --config lychee.toml --dump-inputs . .github 2>/dev/null \
-            | grep '\.md$' \
+          grep '\.md$' /tmp/dump.txt \
             | sed "s|^$PWD/||; s|^\./||" \
-            | sort -u > /tmp/scanned.txt
+            | sort -u > /tmp/scanned.txt || true
           git ls-files '*.md' | sort -u > /tmp/tracked.txt
 
           # An empty input set must fail rather than vacuously satisfy comm —
@@ -198,6 +212,8 @@ jobs:
           # failure, not a pass.
           if [ ! -s /tmp/scanned.txt ]; then
             echo "lychee reported no markdown inputs at all; the link check is not reading anything"
+            echo "--- raw --dump-inputs output ---"
+            cat /tmp/dump.txt
             exit 1
           fi
 
@@ -230,8 +246,40 @@ jobs:
       # does not use — and only then failed. Fail before doing the wrong work.
       - name: the pinned goreleaser version matches release.yml
         run: |
-          ci_v=$(grep -oE 'version: "[0-9.]+"' .github/workflows/ci.yml | sort -u)
-          rel_v=$(grep -oE 'version: "[0-9.]+"' .github/workflows/release.yml | sort -u)
+          # Scoped to goreleaser-action steps, and bounded by the STEP rather
+          # than a fixed line window. Matching every quoted `version:` in the
+          # file would make any unrelated action that takes a version input
+          # look like drift; a fixed `grep -A N` window instead breaks whenever
+          # a comment above the input grows past N lines, which it already did
+          # once while writing this.
+          gr_version() {
+            awk '
+              /^[[:space:]]*-[[:space:]]+uses:[[:space:]]*goreleaser\/goreleaser-action@/ { instep=1; next }
+              instep && /^[[:space:]]*-[[:space:]]/ { instep=0 }
+              instep && match($0, /version:[[:space:]]*"[0-9][0-9.]*"/) {
+                v = substr($0, RSTART, RLENGTH)
+                gsub(/version:[[:space:]]*"|"/, "", v)
+                print v
+              }
+            ' "$1" | sort -u
+          }
+          ci_v=$(gr_version .github/workflows/ci.yml)
+          rel_v=$(gr_version .github/workflows/release.yml)
+
+          # Empty means the extraction stopped matching, not that the versions
+          # agree. Without this the guard would silently pass on "" == "".
+          if [ -z "$ci_v" ] || [ -z "$rel_v" ]; then
+            echo "could not read a goreleaser version from one of the workflows:"
+            echo "  ci.yml:      '$ci_v'"
+            echo "  release.yml: '$rel_v'"
+            exit 1
+          fi
+          # More than one distinct version within a file is drift too.
+          if [ "$(printf '%s\n' "$ci_v" | wc -l)" -ne 1 ]; then
+            echo "ci.yml pins more than one goreleaser version:"
+            printf '%s\n' "$ci_v"
+            exit 1
+          fi
           if [ "$ci_v" != "$rel_v" ]; then
             echo "goreleaser version drift:"
             echo "  ci.yml:      $ci_v"
