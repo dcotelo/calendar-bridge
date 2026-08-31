@@ -5,12 +5,25 @@ metrics plus liveness and readiness probes.
 
 ## What is and isn't exposed
 
-Everything described here carries **counts, timestamps, and account names** —
-the same short labels you already wrote into `config.yaml`. Nothing here carries
-event titles, descriptions, locations, attendees, calendar IDs, OAuth tokens, or
-credential file contents. That is a property of the design, not of the logging
-configuration: the neutral event model the engine works with has no content
-fields at all (see [ARCHITECTURE.md](ARCHITECTURE.md)).
+Nothing here carries event **titles**, descriptions, locations, attendees,
+calendar IDs, OAuth tokens, or credential file contents. That is a property of
+the design rather than of the logging configuration: the neutral event model
+the engine works with has no content fields at all (see
+[ARCHITECTURE.md](ARCHITECTURE.md)).
+
+The two surfaces differ, and the difference matters if you ship logs somewhere
+you do not control:
+
+| Surface | Carries |
+|---|---|
+| `/metrics` | Counts, timestamps, and account names — the short labels you wrote into `config.yaml`. No per-event data of any kind. |
+| Structured logs | The above, **plus Google's opaque event ID** for the source event, in the `source` field. |
+
+An event ID is not a title and reveals nothing about what the event *is*. It is
+still stable, per-event metadata: anyone holding two sets of logs could use it
+to tell that the same source event appears in both, and it identifies that
+event to anyone who can also query the calendar. If your logs leave your
+infrastructure, that is the field to be aware of. Metrics do not contain it.
 
 ---
 
