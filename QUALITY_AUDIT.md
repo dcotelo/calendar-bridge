@@ -694,6 +694,28 @@ machine-readable on the error path too.
 **Nit.** Found in the first end-to-end run. Go already suffixes a pseudo-version
 derived from a dirty tree; we appended again.
 
+#### N-06 — `make fmt-check` passed on a file that would not parse
+
+**Low.** Found while addressing review feedback on the CLI PR.
+
+The recipe captured `gofmt -l .` into a variable and tested only whether the
+output was empty, discarding gofmt's exit status. gofmt reports *unformatted
+files* on stdout, but reports *its own failures* — an unparseable file, or a
+missing binary — on stderr with a non-zero status and empty stdout. A file
+containing invalid Go therefore satisfied `fmt-check`.
+
+The CI workflow uses the same shape and is **not** affected: GitHub Actions
+runs `run:` blocks under `bash --noprofile --norc -eo pipefail`, where a failing
+command substitution in an assignment trips `errexit`. Make recipes run under
+plain `sh`, which does not. Both were verified directly rather than reasoned
+about.
+
+Worth recording less for its severity — `go build` and `go vet` would both
+reject the same file moments later — than for the class: a check whose failure
+mode is *passing quietly* is worse than no check, because it is trusted. The
+same "capture stdout, ignore status" shape is worth grepping for whenever a new
+gate is added.
+
 ### Invariant coverage, after
 
 The matrix above described the state at audit time. Current state:
