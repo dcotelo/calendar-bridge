@@ -2,23 +2,26 @@
 [extend]
 useDefault = true
 
+# Allowlisting by PATH would disable scanning for those files entirely: when an
+# allowlist sets several criteria, a path match alone is enough to suppress a
+# finding, so a real secret committed to README.md or a googleauth test would be
+# silently ignored. A secret scanner that answers "no leaks" without looking is
+# worse than none, because it is trusted.
+#
+# So this allowlists the specific fabricated VALUES instead. Each one is a
+# literal string that appears in the fixtures and documentation, and none of
+# them is a credential for anything that exists.
 [allowlist]
-description = "Test fixtures and documentation placeholders, none of which are real credentials."
-paths = [
-  # Fabricated OAuth client documents used by the googleauth tests. There is no
-  # real project, client, or secret behind them.
-  '''internal/googleauth/.*_test\.go''',
-  # Synthetic tokens and credentials generated for the screenshot fixtures.
-  '''scripts/screenshots/.*''',
-  # Documentation uses obvious placeholders (CHANGE-ME-…, <your-app-name>).
-  '''docs/.*\.md''',
-  '''README\.md''',
-  '''config\.example\.yaml''',
-]
+description = "Fabricated values used by tests, fixtures and documentation placeholders."
 regexTarget = "match"
 regexes = [
-  '''NOT-A-REAL-SECRET''',
+  # Documentation placeholders the reader is expected to replace.
   '''CHANGE-ME[-A-Za-z0-9_]*''',
+  '''NOT-A-REAL-SECRET''',
+  # Tokens fabricated by the googleauth and sync tests.
   '''fake-(access|refresh)-token''',
   '''ya29\.FAKE[-A-Za-z0-9_]*''',
+  # The screenshot and demo fixtures' OAuth client. There is no such project.
+  '''0{12}-demofixture\.apps\.googleusercontent\.com''',
+  '''demo-fixture-not-a-secret''',
 ]
