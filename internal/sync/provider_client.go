@@ -18,15 +18,20 @@ import (
 // so mapping neutral Events into minimal *calendar.Event values is lossless
 // for the engine's purposes.
 type providerClient struct {
-	p     Provider
-	title string
+	p Provider
 }
 
-// NewProviderClient adapts a neutral Provider into a CalendarClient. title is
-// the busy-block title to stamp on inserts (the engine also sets it, but
-// providers create the block, so they need it here).
-func NewProviderClient(p Provider, title string) CalendarClient {
-	return &providerClient{p: p, title: title}
+// NewProviderClient adapts a neutral Provider into a CalendarClient.
+//
+// The block title is NOT configured here: it travels on the event the caller
+// passes to InsertEvent/UpdateEvent, so there is exactly one source of truth.
+// An earlier version took a title and fell back to it whenever the event's
+// summary was empty, which cannot distinguish "the caller wants an empty
+// title" from "the caller set none" — and rewriting an intentionally-empty
+// title to the fallback makes the engine see title drift and rewrite the same
+// block on every pass, forever.
+func NewProviderClient(p Provider) CalendarClient {
+	return &providerClient{p: p}
 }
 
 // eventToGoogle maps a neutral Event back to a minimal *calendar.Event
@@ -70,17 +75,6 @@ func eventToGoogle(e Event) *calendar.Event {
 	return ev
 }
 
-// blockTitle picks the title to stamp on a block: whatever the engine set on
-// the event it handed down, falling back to the title this bridge was
-// constructed with. Preferring the engine's value means a block_title change
-// takes effect through the bridge, not just on the direct Google path.
-func (c *providerClient) blockTitle(ev *calendar.Event) string {
-	if ev != nil && ev.Summary != "" {
-		return ev.Summary
-	}
-	return c.title
-}
-
 func (c *providerClient) ListEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]*calendar.Event, error) {
 	events, err := c.p.ListEvents(ctx, calendarID, timeMin, timeMax)
 	if err != nil {
@@ -112,7 +106,7 @@ func (c *providerClient) InsertEvent(ctx context.Context, calendarID string, ev 
 	if !own.validForWrite() {
 		return nil, ErrNotOwned
 	}
-	created, err := c.p.InsertBlock(ctx, calendarID, c.blockTitle(ev), spanFromGoogle(ev.Start), spanFromGoogle(ev.End), own)
+	created, err := c.p.InsertBlock(ctx, calendarID, ev.Summary, spanFromGoogle(ev.Start), spanFromGoogle(ev.End), own)
 	if err != nil || created == nil {
 		return nil, err
 	}
@@ -131,7 +125,7 @@ func (c *providerClient) UpdateEvent(ctx context.Context, calendarID, eventID st
 	if !block.Ownership.validForWrite() {
 		return nil, ErrNotOwned
 	}
-	updated, err := c.p.UpdateBlock(ctx, calendarID, block, c.blockTitle(ev), spanFromGoogle(ev.Start), spanFromGoogle(ev.End))
+	updated, err := c.p.UpdateBlock(ctx, calendarID, block, ev.Summary, spanFromGoogle(ev.Start), spanFromGoogle(ev.End))
 	if err != nil || updated == nil {
 		return nil, err
 	}

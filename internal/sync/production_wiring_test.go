@@ -20,9 +20,9 @@ import (
 // wired straight to the Google client would skip all of it.
 
 // productionStack mirrors buildEngine's client composition over a fake.
-func productionStack(f CalendarClient, title string) CalendarClient {
+func productionStack(f CalendarClient) CalendarClient {
 	retrying := NewRetryingClient(f, RetryPolicy{MaxAttempts: 2, BaseBackoff: time.Millisecond, MaxBackoff: time.Millisecond}, newTestLogger(), "test")
-	return NewProviderClient(NewGoogleProvider(retrying), title)
+	return NewProviderClient(NewGoogleProvider(retrying))
 }
 
 func productionHarness(t *testing.T, names ...string) *harness {
@@ -32,7 +32,7 @@ func productionHarness(t *testing.T, names ...string) *harness {
 	for _, n := range names {
 		f := newFakeCalendarClient()
 		h.fakes[n] = f
-		accounts = append(accounts, Account{Name: n, CalendarID: "primary", Client: productionStack(f, "Busy (calendar-bridge)")})
+		accounts = append(accounts, Account{Name: n, CalendarID: "primary", Client: productionStack(f)})
 	}
 	h.engine = &Engine{
 		Accounts:      accounts,
@@ -110,7 +110,7 @@ func TestProductionWiring_NoSyncLoopAcrossThreeAccounts(t *testing.T) {
 // would fall through to an ETag-only guard.
 func TestProductionWiring_RefusesToDeleteAnEventThatLostItsOwnerTag(t *testing.T) {
 	f := newFakeCalendarClient()
-	client := productionStack(f, "Busy")
+	client := productionStack(f)
 
 	f.seed("blk-1", &calendar.Event{
 		Summary: "Busy",
@@ -132,7 +132,7 @@ func TestProductionWiring_RefusesToDeleteAnEventThatLostItsOwnerTag(t *testing.T
 // orphan nothing can identify or collect.
 func TestProductionWiring_RefusesToInsertAnUntaggedBlock(t *testing.T) {
 	f := newFakeCalendarClient()
-	client := productionStack(f, "Busy")
+	client := productionStack(f)
 
 	_, err := client.InsertEvent(context.Background(), "primary", &calendar.Event{
 		Summary: "Busy",

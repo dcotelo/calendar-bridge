@@ -52,13 +52,13 @@ func TestGoogleProvider_UpdateRejectsInvalidOwnership(t *testing.T) {
 	end := TimeSpan{DateTime: time.Now().Add(time.Hour).Format(time.RFC3339)}
 	_, err := p.UpdateBlock(context.Background(), "primary", block, "Busy", start, end)
 	if !errors.Is(err, ErrNotOwned) {
-		t.Fatalf("UpdateBlockTime err = %v, want ErrNotOwned", err)
+		t.Fatalf("UpdateBlock err = %v, want ErrNotOwned", err)
 	}
 }
 
 func TestProviderClient_InsertRejectsUntaggedEvent(t *testing.T) {
 	fake := newFakeCalendarClient()
-	c := NewProviderClient(NewGoogleProvider(fake), "Busy")
+	c := NewProviderClient(NewGoogleProvider(fake))
 	// A plain, untagged event (no ExtendedProperties).
 	ev := realEventIn("real-1", time.Hour, time.Hour)
 	_, err := c.InsertEvent(context.Background(), "primary", ev)
@@ -72,7 +72,7 @@ func TestProviderClient_InsertRejectsUntaggedEvent(t *testing.T) {
 
 func TestProviderClient_UpdateRejectsUntaggedEvent(t *testing.T) {
 	fake := newFakeCalendarClient()
-	c := NewProviderClient(NewGoogleProvider(fake), "Busy")
+	c := NewProviderClient(NewGoogleProvider(fake))
 	ev := realEventIn("real-1", time.Hour, time.Hour) // untagged
 	_, err := c.UpdateEvent(context.Background(), "primary", "real-1", ev, "")
 	if !errors.Is(err, ErrNotOwned) {
@@ -80,7 +80,7 @@ func TestProviderClient_UpdateRejectsUntaggedEvent(t *testing.T) {
 	}
 }
 
-// --- concurrent-delete path: UpdateBlockTime returns (nil,nil) when the block
+// --- concurrent-delete path: UpdateBlock returns (nil,nil) when the block
 // vanished between find and update ---
 
 func TestGoogleProvider_UpdateConcurrentDeleteReturnsNil(t *testing.T) {
@@ -94,16 +94,16 @@ func TestGoogleProvider_UpdateConcurrentDeleteReturnsNil(t *testing.T) {
 	end := TimeSpan{DateTime: time.Now().Add(time.Hour).Format(time.RFC3339)}
 	got, err := p.UpdateBlock(context.Background(), "primary", block, "Busy", start, end)
 	if err != nil {
-		t.Fatalf("UpdateBlockTime err = %v, want nil (concurrent delete is not an error)", err)
+		t.Fatalf("UpdateBlock err = %v, want nil (concurrent delete is not an error)", err)
 	}
 	if got != nil {
-		t.Errorf("UpdateBlockTime event = %v, want nil (block already gone)", got)
+		t.Errorf("UpdateBlock event = %v, want nil (block already gone)", got)
 	}
 }
 
 func TestProviderClient_UpdateConcurrentDeleteReturnsNil(t *testing.T) {
 	fake := newFakeCalendarClient()
-	c := NewProviderClient(NewGoogleProvider(fake), "Busy")
+	c := NewProviderClient(NewGoogleProvider(fake))
 	// Build an owned google event whose block isn't present in the fake.
 	ev := realEventIn("real-1", time.Hour, time.Hour)
 	ev.ExtendedProperties = extProps(map[string]string{
@@ -182,7 +182,7 @@ func TestGoogleProvider_PropagatesClientErrors(t *testing.T) {
 			},
 		},
 		{
-			name: "UpdateBlockTime",
+			name: "UpdateBlock",
 			set:  func(f *fakeCalendarClient) { f.failUpdate = sentinel },
 			call: func(p Provider, f *fakeCalendarClient) error {
 				// Seed the owned block so the find succeeds and update is reached.
@@ -194,7 +194,7 @@ func TestGoogleProvider_PropagatesClientErrors(t *testing.T) {
 				f.seed("blk", blk)
 				ev, err := p.UpdateBlock(context.Background(), "primary", Event{Ownership: own}, "Busy", start, end)
 				if ev != nil {
-					t.Errorf("UpdateBlockTime returned event on error")
+					t.Errorf("UpdateBlock returned event on error")
 				}
 				return err
 			},
@@ -281,7 +281,7 @@ func (l *looseFindClient) DeleteEvent(ctx context.Context, calendarID, eventID, 
 
 // TestGoogleProvider_IgnoresSourceMatchButUntagged proves the adapter does not
 // trust a CalendarClient that returns a source-property match without the full
-// ownership tag: FindOwnedBlock returns nil and UpdateBlockTime refuses.
+// ownership tag: FindOwnedBlock returns nil and UpdateBlock refuses.
 func TestGoogleProvider_IgnoresSourceMatchButUntagged(t *testing.T) {
 	fake := newFakeCalendarClient()
 	imposter := realEventIn("imposter", time.Hour, time.Hour)
@@ -305,10 +305,10 @@ func TestGoogleProvider_IgnoresSourceMatchButUntagged(t *testing.T) {
 	_, err = p.UpdateBlock(context.Background(), "primary", Event{Ownership: ownedFor("a", "real-1")}, "Busy",
 		TimeSpan{DateTime: time.Now().Format(time.RFC3339)}, TimeSpan{DateTime: time.Now().Add(time.Hour).Format(time.RFC3339)})
 	if !errors.Is(err, ErrNotOwned) {
-		t.Errorf("UpdateBlockTime err = %v, want ErrNotOwned for untagged re-read", err)
+		t.Errorf("UpdateBlock err = %v, want ErrNotOwned for untagged re-read", err)
 	}
 	if loose.updated {
-		t.Error("UpdateBlockTime called UpdateEvent on an untagged event")
+		t.Error("UpdateBlock called UpdateEvent on an untagged event")
 	}
 }
 
@@ -322,9 +322,9 @@ func TestGoogleProvider_UpdatePropagatesFindError(t *testing.T) {
 	end := TimeSpan{DateTime: time.Now().Add(time.Hour).Format(time.RFC3339)}
 	ev, err := p.UpdateBlock(context.Background(), "primary", block, "Busy", start, end)
 	if !errors.Is(err, sentinel) {
-		t.Errorf("UpdateBlockTime err = %v, want sentinel", err)
+		t.Errorf("UpdateBlock err = %v, want sentinel", err)
 	}
 	if ev != nil {
-		t.Errorf("UpdateBlockTime returned event on error")
+		t.Errorf("UpdateBlock returned event on error")
 	}
 }

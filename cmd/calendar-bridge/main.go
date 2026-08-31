@@ -157,7 +157,7 @@ func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 		accounts = append(accounts, sync.Account{
 			Name:       a.Name,
 			CalendarID: a.CalendarID,
-			Client:     sync.NewProviderClient(sync.NewGoogleProvider(retrying), cfg.BlockTitle),
+			Client:     sync.NewProviderClient(sync.NewGoogleProvider(retrying)),
 		})
 	}
 

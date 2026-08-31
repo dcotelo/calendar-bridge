@@ -70,12 +70,13 @@ func TestGoogleProvider_RoundTripsNeutralModel(t *testing.T) {
 	// Update its time — ownership MUST survive (Google update is full replace).
 	newStart := TimeSpan{DateTime: time.Now().Add(72 * time.Hour).Format(time.RFC3339), TimeZone: "UTC"}
 	newEnd := TimeSpan{DateTime: time.Now().Add(73 * time.Hour).Format(time.RFC3339), TimeZone: "UTC"}
-	updated, err := p.UpdateBlock(ctx, "primary", *found, "Busy (calendar-bridge)", newStart, newEnd)
+	const updatedTitle = "Busy (calendar-bridge)"
+	updated, err := p.UpdateBlock(ctx, "primary", *found, updatedTitle, newStart, newEnd)
 	if err != nil {
-		t.Fatalf("UpdateBlockTime error = %v", err)
+		t.Fatalf("UpdateBlock error = %v", err)
 	}
 	if updated == nil {
-		t.Fatal("UpdateBlockTime returned nil")
+		t.Fatal("UpdateBlock returned nil")
 	}
 	if !updated.Ownership.IsOwned() {
 		t.Error("updated block lost ownership tag — full-replace update wiped extended properties")
@@ -85,6 +86,13 @@ func TestGoogleProvider_RoundTripsNeutralModel(t *testing.T) {
 	}
 	if !updated.Start.Equal(newStart) {
 		t.Errorf("updated start = %+v, want %+v", updated.Start, newStart)
+	}
+	// The title argument is applied, not silently dropped. UpdateBlock assigns
+	// it unconditionally, which is what makes a block_title change reach blocks
+	// that already exist — and this call deliberately uses a different title
+	// from the one the insert above used.
+	if updated.Title != updatedTitle {
+		t.Errorf("updated title = %q, want %q — the title argument must reach the block", updated.Title, updatedTitle)
 	}
 
 	// The fake should still hold exactly one owned block (moved, not duplicated).
@@ -136,8 +144,8 @@ func TestEngine_RunsThroughProviderBridge(t *testing.T) {
 	fakeA.seed("real-a-1", realEventIn("real-a-1", 24*time.Hour, time.Hour))
 
 	// Wrap each fake as: fake -> Provider -> CalendarClient bridge.
-	clientA := NewProviderClient(NewGoogleProvider(fakeA), "Busy (bridge)")
-	clientB := NewProviderClient(NewGoogleProvider(fakeB), "Busy (bridge)")
+	clientA := NewProviderClient(NewGoogleProvider(fakeA))
+	clientB := NewProviderClient(NewGoogleProvider(fakeB))
 
 	eng := &Engine{
 		Accounts: []Account{
