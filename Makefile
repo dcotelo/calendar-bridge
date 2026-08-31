@@ -42,7 +42,11 @@ fmt: ## Format all Go files
 
 .PHONY: fmt-check
 fmt-check: ## Fail if any file is not gofmt'd
-	@out=$$(gofmt -l .); \
+	@# gofmt reports unformatted files on stdout, but reports its OWN failures
+	@# (an unparseable file, or a missing gofmt) on stderr with a non-zero
+	@# status and an EMPTY stdout. Checking only $$out would then pass: a file
+	@# with a syntax error silently satisfies fmt-check. Check the status first.
+	@out=$$(gofmt -l .) || { echo "gofmt failed"; exit 1; }; \
 	if [ -n "$$out" ]; then echo "not gofmt'd:"; echo "$$out"; exit 1; fi
 
 .PHONY: vet
