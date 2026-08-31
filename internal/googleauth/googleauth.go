@@ -194,7 +194,10 @@ func Authorize(ctx context.Context, credentialsFile, tokenFile string) error {
 	if err := saveToken(tokenFile, tok); err != nil {
 		return fmt.Errorf("saving token to %s: %w", filepath.Base(tokenFile), err)
 	}
-	fmt.Printf("Token saved to %s\n", tokenFile)
+	// Base name only: `auth` is interactive, but its stdout can be captured by
+	// a wrapper script, and nothing else in this package puts a credential path
+	// into output any more. The operator supplied the path in their own config.
+	fmt.Printf("Token saved to %s\n", filepath.Base(tokenFile))
 	return nil
 }
 

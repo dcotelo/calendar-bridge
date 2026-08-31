@@ -10,12 +10,29 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/oauth2"
 )
+
+// requireEnforcedPermissions skips a test that makes a file unreadable via
+// os.Chmod, on platforms where that does not actually prevent reads:
+//
+//   - Windows: os.Chmod only toggles the read-only attribute. A 0o000 file is
+//     still readable, so Client would succeed and the assertion would fail.
+//   - root: permission bits are not enforced for uid 0.
+func requireEnforcedPermissions(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows: os.Chmod cannot make a file unreadable")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits are not enforced")
+	}
+}
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -351,9 +368,7 @@ func writeToken(t *testing.T, dir, name string, tok *oauth2.Token) string {
 // `auth`, which cannot fix any of those, and is the exact mis-signalling
 // ErrTokenUnreadable was introduced to prevent.
 func TestClient_UnopenableTokenFileIsNotReportedAsNeedsAuth(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: permission bits are not enforced")
-	}
+	requireEnforcedPermissions(t)
 	dir := t.TempDir()
 	creds := writeFile(t, dir, "credentials.json", fakeCredentials)
 	tokenPath := writeToken(t, dir, "token.json", &oauth2.Token{AccessToken: "a", RefreshToken: "r"})
@@ -499,9 +514,7 @@ func TestClient_ErrorsNeverContainTheSuppliedPath(t *testing.T) {
 	})
 
 	t.Run("unopenable token file", func(t *testing.T) {
-		if os.Geteuid() == 0 {
-			t.Skip("running as root: permission bits are not enforced")
-		}
+		requireEnforcedPermissions(t)
 		p := writeToken(t, root, "locked.json", &oauth2.Token{AccessToken: "a", RefreshToken: "r"})
 		if err := os.Chmod(p, 0o000); err != nil {
 			t.Fatalf("chmod: %v", err)
