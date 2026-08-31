@@ -1,5 +1,6 @@
-// Package config loads calendar-bridge configuration from a YAML file and
-// environment variable overrides.
+// Package config loads, validates, and saves calendar-bridge configuration
+// from a YAML file. There are no environment-variable overrides: the config
+// file is the single source of truth, and the CLI's -config flag chooses it.
 package config
 
 import (
@@ -7,10 +8,11 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/dcotelo/calendar-bridge/internal/atomicfile"
 )
 
 // Account represents one Google account whose calendar we sync.
@@ -176,14 +178,13 @@ func (c *Config) applyDefaults() {
 }
 
 // Save validates the config and writes it back to path as YAML, atomically
-// and with owner-only (0600) permissions.
+// and with owner-only (0600) permissions (see internal/atomicfile).
 //
-// It writes to a temporary file in the same directory and renames it into
-// place, so a crash mid-write can never leave a truncated or half-written
-// config. It validates BEFORE touching disk, so an invalid config (e.g.
-// fewer than 2 accounts, missing required fields) is rejected without
-// clobbering the existing file. The file is written 0600 because it may
-// contain the WebUI auth token and always references credential/token paths.
+// It validates BEFORE touching disk, so an invalid config (e.g. fewer than 2
+// accounts, missing required fields) is rejected without clobbering the
+// existing file. The file is written 0600 because it may contain the WebUI
+// auth token and the webhook verification token, and always references
+// credential/token paths.
 func (c *Config) Save(path string) error {
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("refusing to save invalid config: %w", err)
@@ -194,36 +195,8 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".config-*.yaml.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp config file in %s: %w", dir, err)
-	}
-	tmpName := tmp.Name()
-	// Best-effort cleanup if we bail before the rename succeeds.
-	defer func() { _ = os.Remove(tmpName) }()
-
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temp config file to 0600: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("writing temp config file: %w", err)
-	}
-	// fsync the temp file before the rename so the new contents are durably on
-	// disk first; otherwise a crash right after rename could leave the config
-	// entry pointing at a file whose data never reached the platter.
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("syncing temp config file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing temp config file: %w", err)
-	}
-
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("atomically replacing config file %s: %w", path, err)
+	if err := atomicfile.Write(path, data, atomicfile.OwnerOnly); err != nil {
+		return fmt.Errorf("saving config to %s: %w", path, err)
 	}
 	return nil
 }
