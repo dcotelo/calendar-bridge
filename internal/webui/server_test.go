@@ -700,3 +700,64 @@ func TestAPIResponses_AreNotCacheable(t *testing.T) {
 		}
 	}
 }
+
+// An error response must never describe the server's filesystem. The UI is a
+// local admin surface, but the browser is still the wrong place to learn where
+// on disk the operator keeps their config and credentials — and the response
+// may be pasted into an issue or a screenshot.
+//
+// This asserts the HTTP body directly rather than trusting config.Load to stay
+// path-free, so a regression in either layer is caught here.
+func TestGetConfig_ErrorResponseNeverDisclosesTheConfigPath(t *testing.T) {
+	cases := map[string]func(t *testing.T) string{
+		"missing config file": func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), "sEcReTdIrNaMe")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			return filepath.Join(dir, "config.yaml")
+		},
+		"unparseable config file": func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), "sEcReTdIrNaMe")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			p := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(p, []byte("accounts: [oops\n"), 0o600); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			return p
+		},
+		"config file that fails validation": func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), "sEcReTdIrNaMe")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			p := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(p, []byte("accounts: []\n"), 0o600); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			return p
+		},
+	}
+
+	for name, seed := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := seed(t)
+			srv := newTestServer(t, "", func(o *Options) { o.ConfigPath = path })
+
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req(t, http.MethodGet, "/api/config", "", ""))
+
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+			}
+			body := w.Body.String()
+			for _, leak := range []string{path, filepath.Dir(path), "sEcReTdIrNaMe"} {
+				if strings.Contains(body, leak) {
+					t.Errorf("response discloses %q:\n%s", leak, body)
+				}
+			}
+		})
+	}
+}

@@ -41,10 +41,13 @@ func (s *Server) writeError(w http.ResponseWriter, status int, msg string) {
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := config.Load(s.configPath)
 	if err != nil {
-		// config.Load embeds the config path in its error text. Keep it out of
-		// the response: the browser has no use for the server's filesystem
-		// layout, and the operator already knows the path they passed.
-		s.logger.Warn("webui: could not load config for GET /api/config")
+		// The response stays generic: the browser has no use for the server's
+		// filesystem layout, and the operator already knows the path they
+		// passed. The error still goes to the log, where the operator needs
+		// it to tell "missing" from "malformed" — config.Load is path-free
+		// (it strips the *fs.PathError cause), so logging it discloses
+		// nothing the response deliberately withholds.
+		s.logger.Warn("webui: could not load config for GET /api/config", "error", err)
 		s.writeError(w, http.StatusInternalServerError,
 			"could not load the configuration file (check the -config path and its contents)")
 		return
