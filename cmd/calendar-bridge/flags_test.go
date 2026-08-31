@@ -15,6 +15,14 @@ import (
 // `sync-once -bogus -h` and printed help — swallowing an invalid flag that
 // should have failed. These assert the ordering directly, without exercising
 // the os.Exit paths (which a unit test cannot).
+//
+// These pin the PREMISE parseFlags is built on — what flag.FlagSet does with
+// each input — so a change in that behaviour is caught here rather than
+// surfacing as a confusing failure elsewhere. parseFlags ITSELF, including the
+// stream each outcome is written to and the exit code it produces, is covered
+// in cli_test.go by running the real binary as a subprocess. Both are needed:
+// these are fast and precise about ordering, those are the only way to observe
+// an os.Exit.
 func TestFlagParsing_OrderingAndErrorClassification(t *testing.T) {
 	cases := []struct {
 		name     string

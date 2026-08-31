@@ -19,6 +19,9 @@ import (
 //
 // TestMain re-executes this test binary with cbCLIArgs set, dispatches through
 // the real main(), and lets it exit however it would in production.
+//
+// flags_test.go covers the complementary half: what flag.FlagSet does with
+// each input, which is the premise parseFlags is built on.
 const cbCLIArgs = "CALENDAR_BRIDGE_TEST_CLI_ARGS"
 
 func TestMain(m *testing.M) {
