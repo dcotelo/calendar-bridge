@@ -178,10 +178,29 @@ jobs:
       # would read against what git tracks.
       - name: every tracked markdown file is actually checked
         run: |
-          docker run --rm -v "$PWD":/input -w /input lycheeverse/lychee:latest \
-            --config lychee.toml --dump-inputs . .github 2>/dev/null \
-            | grep '\.md$' | sed 's|^/input/||; s|^\./||' | sort -u > /tmp/scanned.txt
+          # The ACTION's lychee, not a docker image: lychee-action appends its
+          # install dir to $GITHUB_PATH, so `lychee` here is the same pinned
+          # binary the check above ran. Pulling lycheeverse/lychee:latest would
+          # have let the guard measure one version's traversal while the check
+          # performed another's — the guard acquiring the exact defect it
+          # exists to catch.
+          # Normalise to repo-relative paths: --dump-inputs may emit "./x.md"
+          # or an absolute path under the workspace, and either would otherwise
+          # look like a missing file.
+          lychee --config lychee.toml --dump-inputs . .github 2>/dev/null \
+            | grep '\.md$' \
+            | sed "s|^$PWD/||; s|^\./||" \
+            | sort -u > /tmp/scanned.txt
           git ls-files '*.md' | sort -u > /tmp/tracked.txt
+
+          # An empty input set must fail rather than vacuously satisfy comm —
+          # the whole point of this guard is that "checked nothing" is a
+          # failure, not a pass.
+          if [ ! -s /tmp/scanned.txt ]; then
+            echo "lychee reported no markdown inputs at all; the link check is not reading anything"
+            exit 1
+          fi
+
           missing=$(comm -23 /tmp/tracked.txt /tmp/scanned.txt)
           if [ -n "$missing" ]; then
             echo "these tracked markdown files are not being link-checked:"
