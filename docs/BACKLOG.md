@@ -108,7 +108,25 @@ Value **medium** for the people it affects. The F-04 fix already handles most
 cases, since all-day events default to Free. Effort **S**
 (`all_day: skip | busy`). Risk low. **Issue.**
 
-### 11. End-to-end tests against a real test Workspace
+### 11. Accept `-help` at the top level
+
+Value **low**, effort **XS** — one string in the existing `case` list.
+
+`calendar-bridge -h`, `--help` and `help` all print usage and exit 0. Top-level
+`-help` exits 2 with `unknown command "-help"`. The asymmetry is the surprising
+part: at the *subcommand* level `-help` works fine, because Go's flag package
+treats `-help` and `--help` identically, while the top-level dispatch is a
+literal string compare in `main()`.
+
+So `calendar-bridge sync-once -help` works and `calendar-bridge -help` does not.
+Found by verifying the documented invocations against the real binary rather
+than against the switch statement. No documentation recommends `-help`, so
+nothing is currently wrong — this is a papercut for anyone who types it.
+
+Deliberately not fixed in the docs PR that found it: it changes CLI behaviour,
+and that belongs in a commit about the CLI. **Issue.**
+
+### 12. End-to-end tests against a real test Workspace
 
 Value **medium-high** — it is the one thing the current suite cannot do, and
 Google's actual behaviour around recurrence exceptions and extended-property
