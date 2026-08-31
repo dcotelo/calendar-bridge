@@ -32,12 +32,15 @@ Every deployment guide has a target-specific version. The shape is always:
 1. Note the current version, so you can roll back to it.
 2. Install the new binary or pull the new image.
 3. Run a dry run — it writes nothing and tells you what would change:
+
    ```bash
    calendar-bridge sync-once -config config.yaml -dry-run -json | python3 -m json.tool
    ```
+
 4. If the counts look wrong, roll back before restarting the daemon.
 5. Restart.
 6. Verify:
+
    ```bash
    curl -s http://127.0.0.1:9090/readyz
    ```
@@ -76,18 +79,21 @@ Releases carry keyless cosign signatures and SBOMs.
 cosign verify-blob \
   --certificate checksums.txt.pem \
   --signature checksums.txt.sig \
-  --certificate-identity-regexp 'https://github.com/dcotelo/calendar-bridge/.*' \
+  --certificate-identity-regexp '^https://github\.com/dcotelo/calendar-bridge/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 
+# Linux:
 sha256sum -c checksums.txt --ignore-missing
+# macOS (no GNU coreutils; shasum ships with the system):
+shasum -a 256 -c checksums.txt --ignore-missing
 ```
 
 For the container image:
 
 ```bash
 cosign verify ghcr.io/dcotelo/calendar-bridge:0.1.0 \
-  --certificate-identity-regexp 'https://github.com/dcotelo/calendar-bridge/.*' \
+  --certificate-identity-regexp '^https://github\.com/dcotelo/calendar-bridge/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

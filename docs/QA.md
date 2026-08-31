@@ -66,7 +66,11 @@ For each, make the change in Google Calendar, run `sync-once`, and check.
 - [ ] **Move one instance** of a recurring event → only that instance's block moves.
 - [ ] **Delete one instance** of a recurring event → only that instance's block is removed.
 - [ ] **Create an event beyond `lookahead_days`** → no block. Then raise `lookahead_days` → the block appears.
-- [ ] **Create an event in the past** → no block.
+- [ ] **Create an event that ended more than 24 hours ago** → no block. The
+      fetch window deliberately includes the previous 24 hours (clock skew, and
+      events that moved), so an event that ended an hour ago *should* still
+      produce one — testing with a recently-past event asserts the opposite of
+      the intended behaviour.
 - [ ] **An event in progress right now** → a block exists.
 
 ## 5. Three accounts — the loop check
@@ -80,7 +84,11 @@ Add a third account.
 
 ## 6. Failure handling
 
-- [ ] **Revoke** one account at [myaccount.google.com/permissions](https://myaccount.google.com/permissions), then `sync-once`: that account is reported as failing, the others still sync, and **no blocks are deleted anywhere**.
+- [ ] **Revoke** one account at [myaccount.google.com/permissions](https://myaccount.google.com/permissions), then `sync-once`: that account is reported as failing, the others still sync, and **none of the revoked account's mirrored blocks are deleted**.
+      Scope the check to that account. A healthy account can legitimately
+      garbage-collect in the same pass — if you also deleted a source event
+      there, its block *should* go — so "nothing was deleted anywhere" can fail
+      on correct behaviour.
 - [ ] Re-authorize it → the next pass recovers with no manual cleanup.
 - [ ] **Network down mid-pass** (disable networking during `run`): the pass fails, is logged, and the loop keeps going. Restore networking → the next pass succeeds.
 - [ ] **Corrupt a token file** (`echo '{' > secrets/x-token.json`): the error says the token is unreadable, *not* "not yet authorized", exit code `4`.
@@ -141,7 +149,11 @@ Spot-check at least one per release; rotate through them.
 
 - [ ] **Docker**: the documented `docker run` in [deployment/docker.md](deployment/docker.md) works verbatim, copy-pasted, on a clean machine.
 - [ ] **docker compose**: `docker compose up -d` works, and `docker compose logs` shows a successful pass.
-- [ ] The container runs as non-root: `docker exec <c> id` — or confirm via `docker inspect`.
+- [ ] The container runs as non-root:
+      `docker inspect --format '{{.Config.User}}' <image-or-container>` prints
+      `65532:65532`. Not `docker exec <c> id` — the image is distroless, with no
+      shell and no `id`, so that command fails for a reason unrelated to the
+      user it runs as.
 - [ ] **systemd**: the unit starts, survives a reboot, and `journalctl --user -u calendar-bridge` shows passes.
 - [ ] **launchd**: the plist loads, survives a logout/login.
 - [ ] **Kubernetes**: `kubectl apply -k deploy/k8s` reaches Ready, and the probes work.

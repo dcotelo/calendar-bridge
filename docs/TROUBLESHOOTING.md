@@ -16,7 +16,7 @@ calendar**. Safe to run at any time, including while the daemon is running.
 
 ## `account not yet authorized`
 
-```
+```text
 setting up: account personal: account not yet authorized, run: calendar-bridge auth -account <account-name>
 ```
 
@@ -34,17 +34,32 @@ the error; you have to look at the config yourself. The commands below do that.
 **Diagnose.**
 
 ```bash
-# 1. What path does the config actually name for that account?
-grep -A4 'name: personal' config.yaml
+# 1. Read the token_file for that account out of the config. This parses the
+#    YAML rather than grepping near a line: key order is not guaranteed and a
+#    comment between the keys would break a line-offset match.
+TOKEN=$(python3 -c '
+import sys, yaml
+cfg = yaml.safe_load(open("config.yaml"))
+name = sys.argv[1]
+for a in cfg["accounts"]:
+    if a["name"] == name:
+        print(a["token_file"]); break
+else:
+    sys.exit("no account named " + name)
+' personal)
+echo "$TOKEN"
 
-# 2. Does the file exist there? Substitute the token_file value from step 1.
-ls -l "$(grep -A4 'name: personal' config.yaml | sed -n 's/.*token_file: *//p')"
+# 2. Does the file exist there?
+ls -l "$TOKEN"
 
 # 3. If that path is RELATIVE, it resolves against the working directory of the
 #    process — not against config.yaml. This is the most common cause under
 #    systemd and Docker, where the working directory is not where you think.
 pwd
 ```
+
+If you do not have PyYAML, just open `config.yaml` and read the `token_file`
+value for that account — that is all the snippet does.
 
 **Fix.** Run the authorization flow for that account:
 
@@ -72,7 +87,16 @@ fix differs.
 read the path out of the config:
 
 ```bash
-TOKEN=$(grep -A4 'name: personal' config.yaml | sed -n 's/.*token_file: *//p')
+# Resolved the same YAML-aware way as the section above.
+TOKEN=$(python3 -c '
+import sys, yaml
+cfg = yaml.safe_load(open("config.yaml"))
+for a in cfg["accounts"]:
+    if a["name"] == sys.argv[1]:
+        print(a["token_file"]); break
+else:
+    sys.exit("no account named " + sys.argv[1])
+' personal)
 # A valid token file is one JSON object with access_token and refresh_token.
 python3 -m json.tool < "$TOKEN"
 ```
@@ -80,7 +104,9 @@ python3 -m json.tool < "$TOKEN"
 **Fix.** Delete it and re-authorize:
 
 ```bash
-rm /etc/calendar-bridge/secrets/personal-token.json
+# $TOKEN as resolved above — a hard-coded path repairs the wrong file for
+# anyone whose config points somewhere else.
+rm "$TOKEN"
 calendar-bridge auth -config config.yaml -account personal
 ```
 
@@ -102,12 +128,13 @@ already-granted account produced an access-token-only file — a time bomb.
 **Diagnose.**
 
 ```bash
-python3 -c "import json;d=json.load(open('secrets/personal-token.json'));print('refresh_token present:', bool(d.get('refresh_token')))"
+# "$TOKEN" as resolved in the section above, not a fixed path.
+python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print('refresh_token present:', bool(d.get('refresh_token')))" "$TOKEN"
 ```
 
 Startup also warns:
 
-```
+```text
 level=WARN msg="token file has no refresh token; this account will stop working when its access token expires"
 ```
 
@@ -270,7 +297,7 @@ title search will also match real events someone created with the same name. See
 [Removing it cleanly](deployment/README.md#removing-it-cleanly) for the API query. In
 Google Calendar's search box:
 
-```
+```text
 Busy (calendar-bridge)
 ```
 
@@ -306,7 +333,7 @@ Polling continues regardless, so this degrades latency, never correctness.
 
 ## The web UI will not start
 
-```
+```text
 ui: refusing to bind non-loopback address "0.0.0.0:8090"
 ```
 
@@ -325,7 +352,7 @@ ssh -L 8090:127.0.0.1:8090 you@your-server
 # then open http://127.0.0.1:8090
 ```
 
-```
+```text
 ui: web_ui.enabled is false in config; set it to true to run the UI
 ```
 
@@ -369,7 +396,7 @@ rather than buying latency with a short one.
 
 ## Permission warnings at startup
 
-```
+```text
 level=WARN msg="secret file has insecure permissions; restrict it to owner-only (chmod 600)" kind=token file=personal-token.json mode=-rw-r--r--
 ```
 

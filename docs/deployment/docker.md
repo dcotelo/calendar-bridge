@@ -25,7 +25,7 @@ token_file: secrets/personal-token.json     # WRONG in a container
 makes the container look in `/app/secrets/personal-token.json` — even if you
 mounted your secrets at `/app/config/secrets`. You get:
 
-```
+```text
 setting up: account personal: reading credentials file personal-credentials.json: no such file or directory
 ```
 
@@ -212,7 +212,7 @@ read-write as separate mounts. The root filesystem is already read-only.
 
 ```bash
 cosign verify ghcr.io/dcotelo/calendar-bridge:latest \
-  --certificate-identity-regexp 'https://github.com/dcotelo/calendar-bridge/.*' \
+  --certificate-identity-regexp '^https://github\.com/dcotelo/calendar-bridge/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 docker buildx imagetools inspect ghcr.io/dcotelo/calendar-bridge:latest

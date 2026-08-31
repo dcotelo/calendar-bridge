@@ -238,12 +238,15 @@ kubectl delete -f deploy/k8s/cronjob.yaml -n calendar-bridge
 #    somewhere: https://myaccount.google.com/permissions
 
 # 3. Remove the Secret and namespace.
-kubectl -n calendar-bridge delete secret calendar-bridge-config
-kubectl delete namespace calendar-bridge
+#    --ignore-not-found so re-running this is harmless: deleting the namespace
+#    already removes the Secret, so the first command fails on a second run
+#    without it, and a cleanup script that cannot be re-run is a trap.
+kubectl -n calendar-bridge delete secret calendar-bridge-config --ignore-not-found
+kubectl delete namespace calendar-bridge --ignore-not-found
 ```
 
-**4. Remove the busy blocks it created.** Manual. Search each calendar for your
-the private extended property `calendarBridgeOwner=calendar-bridge` and delete
+**4. Remove the busy blocks it created.** Manual. Using the Calendar API, list
+events carrying the private extended property `calendarBridgeOwner=calendar-bridge` and delete
 only those. **Not** by `block_title`, which can match real events — see
 [Removing it cleanly](README.md#removing-it-cleanly).
 

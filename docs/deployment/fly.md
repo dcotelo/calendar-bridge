@@ -127,7 +127,10 @@ fly ssh console -a <your-app> -C "/app/calendar-bridge sync-once -config /app/co
 To reach metrics:
 
 ```bash
-fly proxy 9090:9090 -a <your-app>
+# The remote host is explicit on purpose. Without it, flyctl proxies to the
+# first Machine address from its internal DNS, which is not the loopback the
+# metrics endpoint binds to inside the Machine.
+fly proxy 9090:9090 127.0.0.1 -a <your-app>
 curl -s http://127.0.0.1:9090/readyz
 ```
 
@@ -138,17 +141,20 @@ curl -s http://127.0.0.1:9090/readyz
 ```toml
 app = "calendar-bridge"
 ```
+
 Your app name. `fly launch` sets it.
 
 ```toml
 primary_region = "iad"
 ```
+
 Where the machine runs. Latency is irrelevant here — a sync pass takes seconds
 and nothing waits on it — so pick whatever is cheapest or nearest you.
 
 ```toml
 [build]
 ```
+
 Empty, so Fly builds from the `Dockerfile` in the repo root. Pin a published
 image instead if you would rather not build on deploy:
 `image = "ghcr.io/dcotelo/calendar-bridge:v0.2.0"`.
@@ -158,6 +164,7 @@ image instead if you would rather not build on deploy:
   source = "cb_config"
   destination = "/app/config"
 ```
+
 The volume holding `config.yaml` and `secrets/`. It must be writable —
 calendar-bridge re-persists refreshed and rotated OAuth tokens. This is the main
 reason to use a volume rather than baking files into the image.
@@ -167,6 +174,7 @@ reason to use a volume rather than baking files into the image.
   size = "shared-cpu-1x"
   memory = "256mb"
 ```
+
 The smallest machine. calendar-bridge is idle almost all the time and a pass
 uses a few tens of megabytes.
 
@@ -215,13 +223,18 @@ fly scale count 0 -a <your-app>
 
 # 2. Revoke access: https://myaccount.google.com/permissions
 
-# 3. Destroy the app and volume.
+# 3. Note the volume first — after the app is gone it can no longer be listed
+#    through it, so check now if you want a record of what is being removed.
+fly volumes list -a <your-app>
+
+# Destroying the app destroys its volumes too. They enter pending_destroy and
+# are soft-deleted for 24 hours before permanent removal, so back up anything
+# you still want BEFORE this command.
 fly apps destroy <your-app>
-fly volumes list -a <your-app>     # confirm the volume went with it
 ```
 
-**4. Remove the busy blocks it created.** Manual. Search each calendar for your
-the private extended property `calendarBridgeOwner=calendar-bridge` and delete
+**4. Remove the busy blocks it created.** Manual. Using the Calendar API, list
+events carrying the private extended property `calendarBridgeOwner=calendar-bridge` and delete
 only those — never by `block_title`, which can match real events (see
 [Removing it cleanly](README.md#removing-it-cleanly)). **Do this before destroying the app** if
 you would rather calendar-bridge clean up after itself: remove one account from
@@ -239,7 +252,7 @@ you are down to one account it will refuse to run, and the rest is manual.
 | Files vanished after a deploy | They were in the image layer, not the volume. Anything outside `/app/config` is replaced on every deploy. |
 | Machine keeps restarting | `fly logs`. Exit 3 is config, exit 4 is authorization. |
 | Stopped syncing overnight | Auto-stop is enabled. Remove it — there is no request to wake it. |
-| Cannot reach `/metrics` | It binds loopback by design. Use `fly proxy 9090:9090`. |
+| Cannot reach `/metrics` | It binds loopback by design. Use `fly proxy 9090:9090 127.0.0.1 -a <your-app>` — the explicit remote host matters, or flyctl proxies to the Machine's own address instead of its loopback. |
 | Account breaks after a week | The OAuth consent screen is in **Testing** status, where refresh tokens expire after 7 days. Set it to **In production**. |
 | `fly ssh sftp` cannot connect | The machine is not running. `fly status`, and start one. |
 | Volume full | 1 GB is enormous for a few JSON files. If it filled, something else is writing — check the logs. |
