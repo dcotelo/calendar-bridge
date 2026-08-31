@@ -357,10 +357,19 @@ to `accounts.google.com` and `*.googleapis.com` — ordinary Calendar API calls.
 No analytics, no telemetry, no update check, no crash reporting, no third-party
 service of any kind.
 
-**What crosses between your accounts:** a start time, an end time, and the fixed
-`block_title` string. Nothing else. That is structural — the internal event model
-has no fields for a title, description, location, or attendees, so there is
-nowhere for content to flow.
+**What crosses between your accounts:** a start time, an end time, the fixed
+`block_title` string, and the metadata that lets a block be matched back to its
+source — the source account name, its calendar ID, and the source event's
+opaque ID, stored as private properties on the block. That last part is what
+makes safe garbage collection possible.
+
+**No event content crosses**, and that is structural rather than a promise: the
+internal event model has no fields for a description, location, or attendees,
+and no field for a *user's* title. It has one text field, populated only on
+blocks calendar-bridge created, holding your own `block_title` — never anything
+a person wrote. See
+[what crosses an account boundary](docs/ARCHITECTURE.md#what-crosses-an-account-boundary)
+for the exact list.
 
 **Scope:** `calendar.events` only — the narrowest scope that permits creating and
 deleting events. Not the full `calendar` scope, which would also allow calendar
@@ -400,8 +409,12 @@ Honest list. Several of these are on the [roadmap](#roadmap); none are secret.
   same slot. Deduplicating by `iCalUID` is on the roadmap.
 - **Blocks are not removed when you stop running it.** Garbage collection only
   removes blocks it can see and match to a missing source; a process that is not
-  running collects nothing. There is no `uninstall` command yet — you search for
-  your `block_title` and delete by hand.
+  running collects nothing. There is no `uninstall` command yet, so removal is
+  manual: list events carrying the private property
+  `calendarBridgeOwner=calendar-bridge` through the Calendar API and delete
+  those. **Not** by `block_title` — it is configurable and can match real
+  events. See
+  [Removing it cleanly](docs/deployment/README.md#removing-it-cleanly).
 - **Blocks that age out of the window are never collected.** Once both a block
   and its source are older than the 24h look-back, neither is fetched, so the
   block stays. Harmless — it is in the past — but "every block is eventually

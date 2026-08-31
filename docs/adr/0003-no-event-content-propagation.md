@@ -13,18 +13,33 @@ calendar, and that anyone with visibility of either calendar sees both.
 
 ## Decision
 
-Only two things cross an account boundary: **a time span, and the fixed
-`block_title` string.**
+**No event content crosses an account boundary.** What does cross is a time
+span, the fixed `block_title` string, and synchronization metadata.
 
-This is enforced structurally, not by convention. The provider-neutral `Event`
-type the engine reasons about has fields for an ID, a start, an end,
-cancellation, transparency, the owner's invitation response, and ownership
-metadata. It has **no fields at all** for a summary, description, location, or
-attendees. There is nowhere for content to flow.
+The no-content part is enforced structurally, not by convention. The
+provider-neutral `Event` type the engine reasons about has fields for an ID, a
+start, an end, cancellation, transparency, the owner's invitation response, and
+ownership metadata. It has **no fields at all** for a description, location, or
+attendees, and no field carrying a *user's* title. There is nowhere for content
+to flow.
 
-The one exception is deliberate and narrow: `Event.Title` is populated for
-calendar-bridge's *own* blocks, because the engine needs to notice a
-`block_title` change. It is left empty for real user events.
+`Event.Title` is the one text field, and it is deliberate and narrow: populated
+only for calendar-bridge's *own* blocks, holding the operator's configured
+`block_title` so the engine can notice that setting changing. It is left empty
+for real user events, so a real summary cannot enter the model even by accident.
+
+The metadata is the part worth being explicit about, because it is written onto
+the block in the destination calendar as private extended properties:
+`calendarBridgeOwner` (a constant), `calendarBridgeSourceAccount` (the name you
+gave the account), `calendarBridgeSourceCalendarID` (which may be a secondary
+calendar's `c_…@group.calendar.google.com` address), and
+`calendarBridgeSourceEventID` (Google's opaque event ID).
+
+Those three source fields are not incidental — they are what lets garbage
+collection match a block back to its origin and delete only provably-dead ones.
+Without them the tool could not safely delete anything. The cost is that a
+reader of the destination calendar can see which source account and calendar a
+block came from, though not what the event was.
 
 ## Consequences
 

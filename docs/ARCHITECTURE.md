@@ -168,8 +168,10 @@ string, and synchronization metadata.
 The no-content part is structural rather than conventional. The
 provider-neutral `Event` type the engine reasons about has fields for an ID, a
 start, an end, cancellation, transparency, the owner's invitation response, and
-ownership metadata — and no fields at all for a summary, description, location,
-or attendees. There is nowhere for event content to flow even if some future
+ownership metadata — and no fields at all for a description, location or
+attendees, and no field carrying a *user's* summary. The one text field,
+`Event.Title`, holds the operator's own `block_title` and only on blocks
+calendar-bridge created. There is nowhere for event content to flow even if some future
 change tried to send it.
 
 The metadata is deliberate and worth knowing about, because it is written onto
