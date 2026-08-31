@@ -135,15 +135,29 @@ func buildEngine(ctx context.Context, cfg *config.Config, logger *slog.Logger) (
 			return nil, nil, fmt.Errorf("account %s: %w", a.Name, err)
 		}
 		services[a.Name] = svc
+		// Client stack, outermost first:
+		//
+		//   providerClient   neutral Provider -> CalendarClient bridge
+		//   googleProvider   ownership enforcement: refuses to insert or update
+		//                    an untagged block, and re-reads + re-verifies the
+		//                    target before every delete
+		//   retryingClient   429/5xx/network-timeout backoff, and insert
+		//                    reconciliation after an ambiguous failure
+		//   googleCalendar   the real Calendar API
+		//
+		// Retry sits BELOW the provider so each individual Google call the
+		// provider makes (the pre-delete read as well as the delete) gets its
+		// own backoff, rather than a retry replaying a whole check-and-write.
+		retrying := sync.NewRetryingClient(
+			sync.NewGoogleCalendarClient(svc),
+			sync.DefaultRetryPolicy(),
+			logger,
+			a.Name,
+		)
 		accounts = append(accounts, sync.Account{
 			Name:       a.Name,
 			CalendarID: a.CalendarID,
-			Client: sync.NewRetryingClient(
-				sync.NewGoogleCalendarClient(svc),
-				sync.DefaultRetryPolicy(),
-				logger,
-				a.Name,
-			),
+			Client:     sync.NewProviderClient(sync.NewGoogleProvider(retrying)),
 		})
 	}
 
@@ -189,7 +203,8 @@ func runSyncOnce(args []string) {
 
 	cycleCtx, cancel := context.WithTimeout(ctx, syncCycleTimeout)
 	defer cancel()
-	if err := engine.SyncOnce(cycleCtx); err != nil {
+	res, err := engine.SyncOnce(cycleCtx)
+	if err != nil {
 		// A SIGINT/SIGTERM during this pass cancels ctx (and therefore
 		// cycleCtx), which SyncOnce surfaces as an error. That's an
 		// intentional, expected shutdown, not a failure — treat it the
@@ -202,7 +217,9 @@ func runSyncOnce(args []string) {
 		fmt.Fprintf(os.Stderr, "sync failed: %v\n", err)
 		os.Exit(1)
 	}
-	logger.Info("sync pass complete")
+	logger.Info("sync pass complete",
+		"created", res.Created, "updated", res.Updated, "deleted", res.Deleted,
+		"skipped", res.Skipped, "duration", res.Duration())
 }
 
 func runSync(args []string) {
@@ -212,6 +229,8 @@ func runSync(args []string) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	state := newSyncState(cfg.Webhook.Enabled)
 
 	engine, services, err := buildEngine(ctx, cfg, logger)
 	if err != nil {
@@ -248,6 +267,7 @@ func runSync(args []string) {
 		logger.Info("push notifications enabled", "listen", cfg.Webhook.ListenAddr, "public_url_origin", origin)
 	}
 
+	state.markRunning()
 	logger.Info("starting sync loop", "interval", interval, "accounts", len(cfg.Accounts), "push", cfg.Webhook.Enabled)
 	for {
 		select {
@@ -259,12 +279,11 @@ func runSync(args []string) {
 		}
 
 		cycleCtx, cancel := context.WithTimeout(ctx, syncCycleTimeout)
-		err := engine.SyncOnce(cycleCtx)
+		res, err := engine.SyncOnce(cycleCtx)
 		cancel()
+		state.record(res, err)
 		if err != nil {
 			logger.Error("sync pass failed", "error", err)
-		} else {
-			logger.Info("sync pass complete")
 		}
 
 		// Wait for the next trigger: a poll tick, a debounced push
@@ -387,6 +406,11 @@ func runUI(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// `ui` serves the config surface only; it runs no background loop, so
+	// Running stays false and the page says so rather than implying a daemon
+	// is polling behind it.
+	state := newSyncState(cfg.Webhook.Enabled)
+
 	// syncNow builds an engine on demand and runs a single pass. Building per
 	// invocation keeps token/credential reads fresh (e.g. after re-auth) and
 	// avoids holding calendar clients open while the UI idles.
@@ -400,9 +424,12 @@ func runUI(args []string) {
 		}
 		engine, _, err := buildEngine(syncCtx, current, logger)
 		if err != nil {
+			state.record(sync.Result{}, err)
 			return fmt.Errorf("setting up sync: %w", err)
 		}
-		return engine.SyncOnce(syncCtx)
+		res, err := engine.SyncOnce(syncCtx)
+		state.record(res, err)
+		return err
 	}
 
 	statusFn := func() webui.Status {
@@ -415,7 +442,7 @@ func runUI(args []string) {
 			logger.Warn("webui: status could not load config")
 			return webui.Status{LastError: "config load failed (check -config path and file contents)"}
 		}
-		return webui.Status{AccountsNum: len(current.Accounts)}
+		return state.status(len(current.Accounts))
 	}
 
 	srv, err := webui.New(webui.Options{

@@ -114,19 +114,6 @@ func TestTimesEqual(t *testing.T) {
 	}
 }
 
-func TestDeterministicBlockKey(t *testing.T) {
-	k1 := deterministicBlockKey("personal", "evt1")
-	k2 := deterministicBlockKey("personal", "evt1")
-	k3 := deterministicBlockKey("personal", "evt2")
-
-	if k1 != k2 {
-		t.Errorf("deterministicBlockKey should be deterministic: %q != %q", k1, k2)
-	}
-	if k1 == k3 {
-		t.Errorf("deterministicBlockKey should differ for different event IDs: %q == %q", k1, k3)
-	}
-}
-
 func TestAccountIsHealthy(t *testing.T) {
 	healthy := []Account{{Name: "a"}, {Name: "b"}}
 

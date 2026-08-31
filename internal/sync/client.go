@@ -35,8 +35,12 @@ type CalendarClient interface {
 	// InsertEvent creates ev on calendarID.
 	InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error)
 
-	// UpdateEvent updates the event with the given ID on calendarID.
-	UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error)
+	// UpdateEvent updates the event with the given ID on calendarID. If
+	// ifMatchETag is non-empty, the update is conditional on the event still
+	// matching that ETag (If-Match); a precondition failure surfaces as an
+	// error so the caller can re-verify ownership rather than overwrite an
+	// event that changed since it was read.
+	UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error)
 
 	// DeleteEvent deletes the event with the given ID on calendarID. If
 	// ifMatchETag is non-empty, the delete is conditional on the event still
@@ -124,8 +128,12 @@ func (c *googleCalendarClient) GetEvent(ctx context.Context, calendarID, eventID
 	return ev, nil
 }
 
-func (c *googleCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
-	return c.svc.Events.Update(calendarID, eventID, ev).Context(ctx).Do()
+func (c *googleCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
+	call := c.svc.Events.Update(calendarID, eventID, ev).Context(ctx)
+	if ifMatchETag != "" {
+		call.Header().Set("If-Match", ifMatchETag)
+	}
+	return call.Do()
 }
 
 func (c *googleCalendarClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {

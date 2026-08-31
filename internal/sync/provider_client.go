@@ -18,20 +18,27 @@ import (
 // so mapping neutral Events into minimal *calendar.Event values is lossless
 // for the engine's purposes.
 type providerClient struct {
-	p     Provider
-	title string
+	p Provider
 }
 
-// NewProviderClient adapts a neutral Provider into a CalendarClient. title is
-// the busy-block title to stamp on inserts (the engine also sets it, but
-// providers create the block, so they need it here).
-func NewProviderClient(p Provider, title string) CalendarClient {
-	return &providerClient{p: p, title: title}
+// NewProviderClient adapts a neutral Provider into a CalendarClient.
+//
+// The block title is NOT configured here: it travels on the event the caller
+// passes to InsertEvent/UpdateEvent, so there is exactly one source of truth.
+// An earlier version took a title and fell back to it whenever the event's
+// summary was empty, which cannot distinguish "the caller wants an empty
+// title" from "the caller set none" — and rewriting an intentionally-empty
+// title to the fallback makes the engine see title drift and rewrite the same
+// block on every pass, forever.
+func NewProviderClient(p Provider) CalendarClient {
+	return &providerClient{p: p}
 }
 
 // eventToGoogle maps a neutral Event back to a minimal *calendar.Event
-// carrying only what the engine inspects: ID, times, cancelled status, and
-// ownership extended properties.
+// carrying only what the engine inspects: ID, times, cancelled status, the
+// free/busy signals (transparency and the owner's invitation response), and
+// ownership extended properties. Event content — summary, description,
+// location, real attendee identities — is deliberately absent.
 func eventToGoogle(e Event) *calendar.Event {
 	ev := &calendar.Event{
 		Id:    e.ID,
@@ -40,6 +47,20 @@ func eventToGoogle(e Event) *calendar.Event {
 	}
 	if e.Cancelled {
 		ev.Status = "cancelled"
+	}
+	// Round-trip the block title. Without it the engine sees every block as
+	// untitled, decides the title has drifted, and rewrites it on every single
+	// pass — an API write per block per poll interval, forever.
+	ev.Summary = e.Title
+	// Carry the free/busy signals across the bridge. Without these the engine
+	// would treat every event coming through a Provider as opaque and
+	// un-responded, and would block time for events the owner marked Free or
+	// declined.
+	if e.Transparent {
+		ev.Transparency = "transparent"
+	}
+	if e.SelfResponse != "" {
+		ev.Attendees = []*calendar.EventAttendee{{Self: true, ResponseStatus: e.SelfResponse}}
 	}
 	if e.Ownership != (Ownership{}) {
 		ev.ExtendedProperties = &calendar.EventExtendedProperties{
@@ -85,14 +106,17 @@ func (c *providerClient) InsertEvent(ctx context.Context, calendarID string, ev 
 	if !own.validForWrite() {
 		return nil, ErrNotOwned
 	}
-	created, err := c.p.InsertBlock(ctx, calendarID, c.title, spanFromGoogle(ev.Start), spanFromGoogle(ev.End), own)
+	created, err := c.p.InsertBlock(ctx, calendarID, ev.Summary, spanFromGoogle(ev.Start), spanFromGoogle(ev.End), own)
 	if err != nil || created == nil {
 		return nil, err
 	}
 	return eventToGoogle(*created), nil
 }
 
-func (c *providerClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
+func (c *providerClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
+	// The neutral Provider carries no ETag: UpdateBlock does its own re-read
+	// and issues the conditional write itself, exactly as DeleteBlock does.
+	_ = ifMatchETag
 	if ev == nil {
 		return nil, fmt.Errorf("providerClient: UpdateEvent called with nil event")
 	}
@@ -101,7 +125,7 @@ func (c *providerClient) UpdateEvent(ctx context.Context, calendarID, eventID st
 	if !block.Ownership.validForWrite() {
 		return nil, ErrNotOwned
 	}
-	updated, err := c.p.UpdateBlockTime(ctx, calendarID, block, spanFromGoogle(ev.Start), spanFromGoogle(ev.End))
+	updated, err := c.p.UpdateBlock(ctx, calendarID, block, ev.Summary, spanFromGoogle(ev.Start), spanFromGoogle(ev.End))
 	if err != nil || updated == nil {
 		return nil, err
 	}

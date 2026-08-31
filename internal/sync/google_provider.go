@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
@@ -57,12 +58,22 @@ func ownershipFromGoogle(ev *calendar.Event) Ownership {
 }
 
 func eventFromGoogle(ev *calendar.Event) Event {
+	// Only an owned block's title crosses into the neutral model; see
+	// Event.Title. A real event's summary is dropped here, which is what makes
+	// the no-content-propagation guarantee structural rather than conventional.
+	var title string
+	if isOwnedBlock(ev) {
+		title = ev.Summary
+	}
 	return Event{
-		ID:        ev.Id,
-		Start:     spanFromGoogle(ev.Start),
-		End:       spanFromGoogle(ev.End),
-		Cancelled: ev.Status == "cancelled",
-		Ownership: ownershipFromGoogle(ev),
+		ID:           ev.Id,
+		Title:        title,
+		Start:        spanFromGoogle(ev.Start),
+		End:          spanFromGoogle(ev.End),
+		Cancelled:    ev.Status == "cancelled",
+		Transparent:  ev.Transparency == "transparent",
+		SelfResponse: selfResponseStatus(ev),
+		Ownership:    ownershipFromGoogle(ev),
 	}
 }
 
@@ -164,13 +175,20 @@ func (g *googleProvider) InsertBlock(ctx context.Context, calendarID, title stri
 	return &e, nil
 }
 
-func (g *googleProvider) UpdateBlockTime(ctx context.Context, calendarID string, block Event, start, end TimeSpan) (*Event, error) {
+func (g *googleProvider) UpdateBlock(ctx context.Context, calendarID string, block Event, title string, start, end TimeSpan) (*Event, error) {
 	// Google's Events.Update is a full replace: sending only the new times
-	// would wipe the ownership extended properties and the block title,
-	// making the block indistinguishable from a real event on the next pass.
-	// Re-find the full owned block by its source identity, mutate only its
-	// times, and update — preserving every other field. This is exactly the
-	// invariant the engine's original ensureBlock relied on.
+	// would wipe the ownership extended properties, making the block
+	// indistinguishable from a real event on the next pass. Re-find the full
+	// owned block by its source identity, mutate a copy of it, and update —
+	// preserving every other field.
+	//
+	// The write is conditional on the ETag from that re-read, so the
+	// check-and-write is atomic: if the event changed in between — including
+	// having its owner tag stripped — the update fails its precondition
+	// instead of overwriting an event that may no longer be ours. On a 412 we
+	// re-read, re-verify ownership, and retry once with the fresh ETag; a
+	// still-owned block is a benign concurrent edit, a now-untagged one is
+	// refused. This mirrors DeleteBlock, and exists for the same reason.
 	own := block.Ownership
 	// Refuse to update anything not provably ours with a complete source
 	// identity: without it we can't safely locate the block and could target a
@@ -178,36 +196,58 @@ func (g *googleProvider) UpdateBlockTime(ctx context.Context, calendarID string,
 	if !own.validForWrite() {
 		return nil, ErrNotOwned
 	}
-	full, err := g.client.FindBlockBySource(ctx, calendarID, own.SourceAccount, own.SourceEventID)
-	if err != nil {
-		return nil, err
+
+	const maxAttempts = 2
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		full, err := g.client.FindBlockBySource(ctx, calendarID, own.SourceAccount, own.SourceEventID)
+		if err != nil {
+			return nil, err
+		}
+		if full == nil {
+			// The block vanished between list and update (deleted concurrently);
+			// nothing to move. Report it via a nil result, no error.
+			return nil, nil
+		}
+		// Don't trust the re-read result: verify it is genuinely our owned block
+		// with a matching source identity before overwriting. A source-property
+		// match that is untagged, incomplete, or points at a different source
+		// must not be updated — that could clobber a real event.
+		reread := ownershipFromGoogle(full)
+		if !reread.validForWrite() ||
+			reread.SourceAccount != own.SourceAccount ||
+			reread.SourceEventID != own.SourceEventID {
+			return nil, ErrNotOwned
+		}
+
+		// Mutate a COPY, not the event we just re-read: writing into `full`
+		// would leave the caller's in-memory view showing the new span even
+		// when the update fails.
+		payload := *full
+		payload.Start = spanToGoogle(start)
+		payload.End = spanToGoogle(end)
+		// Assigned unconditionally. Preserving the old summary when title is ""
+		// would make the engine see title drift on every pass and rewrite the
+		// same block forever — the caller decides the title, including an empty
+		// one.
+		payload.Summary = title
+
+		updated, err := g.client.UpdateEvent(ctx, calendarID, full.Id, &payload, full.Etag)
+		if err == nil {
+			if updated == nil {
+				return nil, fmt.Errorf("update returned no event")
+			}
+			e := eventFromGoogle(updated)
+			return &e, nil
+		}
+		// A 412 means the event changed after our read; loop to re-read and
+		// re-verify. Any other error is returned as-is.
+		var apiErr *googleapi.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != http.StatusPreconditionFailed {
+			return nil, err
+		}
 	}
-	if full == nil {
-		// The block vanished between list and update (deleted concurrently);
-		// nothing to move. Report it via a nil result, no error.
-		return nil, nil
-	}
-	// Don't trust the re-read result: verify it is genuinely our owned block
-	// with a matching source identity before overwriting its times. A
-	// source-property match that is untagged, incomplete, or points at a
-	// different source must not be updated — that could clobber a real event.
-	reread := ownershipFromGoogle(full)
-	if !reread.validForWrite() ||
-		reread.SourceAccount != own.SourceAccount ||
-		reread.SourceEventID != own.SourceEventID {
-		return nil, ErrNotOwned
-	}
-	full.Start = spanToGoogle(start)
-	full.End = spanToGoogle(end)
-	updated, err := g.client.UpdateEvent(ctx, calendarID, full.Id, full)
-	if err != nil {
-		return nil, err
-	}
-	if updated == nil {
-		return nil, fmt.Errorf("update returned no event")
-	}
-	e := eventFromGoogle(updated)
-	return &e, nil
+	return nil, fmt.Errorf("update of the block for %s/%s kept failing its ownership precondition (event changing concurrently)",
+		own.SourceAccount, own.SourceEventID)
 }
 
 func (g *googleProvider) DeleteBlock(ctx context.Context, calendarID, blockID string) error {

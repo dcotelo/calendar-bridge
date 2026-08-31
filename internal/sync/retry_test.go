@@ -198,8 +198,8 @@ func (g *getFlakyClient) FindBlockBySource(ctx context.Context, calendarID, srcA
 func (g *getFlakyClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
 	return g.inner.InsertEvent(ctx, calendarID, ev)
 }
-func (g *getFlakyClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
-	return g.inner.UpdateEvent(ctx, calendarID, eventID, ev)
+func (g *getFlakyClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
+	return g.inner.UpdateEvent(ctx, calendarID, eventID, ev, ifMatchETag)
 }
 func (g *getFlakyClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
 	return g.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
@@ -240,8 +240,8 @@ func (f *flakyClient) InsertEvent(ctx context.Context, calendarID string, ev *ca
 	return f.inner.InsertEvent(ctx, calendarID, ev)
 }
 
-func (f *flakyClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
-	return f.inner.UpdateEvent(ctx, calendarID, eventID, ev)
+func (f *flakyClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
+	return f.inner.UpdateEvent(ctx, calendarID, eventID, ev, ifMatchETag)
 }
 
 func (f *flakyClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
@@ -289,8 +289,8 @@ func (c *insertReconcileClient) InsertEvent(ctx context.Context, calendarID stri
 	}
 	return c.inner.InsertEvent(ctx, calendarID, ev)
 }
-func (c *insertReconcileClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
-	return c.inner.UpdateEvent(ctx, calendarID, eventID, ev)
+func (c *insertReconcileClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
+	return c.inner.UpdateEvent(ctx, calendarID, eventID, ev, ifMatchETag)
 }
 func (c *insertReconcileClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
 	return c.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
