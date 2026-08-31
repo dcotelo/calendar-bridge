@@ -418,7 +418,7 @@ func (s *scriptedClient) GetEvent(context.Context, string, string) (*calendar.Ev
 func (s *scriptedClient) InsertEvent(context.Context, string, *calendar.Event) (*calendar.Event, error) {
 	return nil, nil
 }
-func (s *scriptedClient) UpdateEvent(context.Context, string, string, *calendar.Event) (*calendar.Event, error) {
+func (s *scriptedClient) UpdateEvent(context.Context, string, string, *calendar.Event, string) (*calendar.Event, error) {
 	return nil, nil
 }
 func (s *scriptedClient) DeleteEvent(context.Context, string, string, string) error {

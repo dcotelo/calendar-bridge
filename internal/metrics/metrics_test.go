@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ var base = time.Date(2026, 3, 12, 14, 0, 0, 0, time.UTC)
 func scrape(t *testing.T, r *Registry) string {
 	t.Helper()
 	w := httptest.NewRecorder()
-	r.Handler(Options{}).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	r.Handler(Options{}).ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("/metrics status = %d, want 200", w.Code)
 	}
@@ -46,15 +47,6 @@ func sampleValue(t *testing.T, body, series string) float64 {
 	}
 	t.Fatalf("series %q not found in:\n%s", series, body)
 	return 0
-}
-
-func hasSeries(body, series string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		if !strings.HasPrefix(line, "#") && strings.HasPrefix(line, series+" ") {
-			return true
-		}
-	}
-	return false
 }
 
 func TestRegistry_EmptyExpositionIsWellFormed(t *testing.T) {
@@ -191,7 +183,7 @@ func TestRegistry_AccountSeriesAreSorted(t *testing.T) {
 	idx := func(name string) int {
 		return strings.Index(body, `calendar_bridge_account_healthy{account="`+name+`"}`)
 	}
-	if !(idx("alpha") < idx("mike") && idx("mike") < idx("zulu")) {
+	if idx("alpha") >= idx("mike") || idx("mike") >= idx("zulu") {
 		t.Errorf("account series are not in sorted order:\n%s", body)
 	}
 }
@@ -209,7 +201,7 @@ func TestHealthz_AlwaysOK(t *testing.T) {
 	r := New(testBuild(), func() time.Time { return base })
 	w := httptest.NewRecorder()
 	r.Handler(Options{ReadyMaxAge: time.Minute}).
-		ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
 
 	// Liveness must not depend on sync health: an instance that cannot reach
 	// Google should keep retrying, not be restarted by its orchestrator.
@@ -265,7 +257,7 @@ func TestReadyz(t *testing.T) {
 func readyzCode(r *Registry, maxAge time.Duration) int {
 	w := httptest.NewRecorder()
 	r.Handler(Options{ReadyMaxAge: maxAge}).
-		ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readyz", nil))
 	return w.Code
 }
 
@@ -274,7 +266,7 @@ func TestHandler_RejectsNonGET(t *testing.T) {
 	h := r.Handler(Options{})
 	for _, path := range []string{"/metrics", "/healthz", "/readyz"} {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, path, nil))
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, nil))
 		if w.Code == http.StatusOK {
 			t.Errorf("POST %s returned 200; the surface is read-only", path)
 		}

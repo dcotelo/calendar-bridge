@@ -158,7 +158,7 @@ func TestReceiver_RejectsTokensOfEveryShape(t *testing.T) {
 			n := &countingNotifier{}
 			r := NewReceiver(good, n, testLogger())
 			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/webhook", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhook", nil)
 			req.Header.Set("X-Goog-Channel-Token", bad)
 			req.Header.Set("X-Goog-Resource-State", "exists")
 			r.ServeHTTP(w, req)
@@ -180,7 +180,7 @@ func TestReceiver_NeverLogsTheToken(t *testing.T) {
 	r := NewReceiver(good, &countingNotifier{}, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/webhook", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhook", nil)
 	req.Header.Set("X-Goog-Channel-Token", "wrong-but-also-secret")
 	r.ServeHTTP(w, req)
 
