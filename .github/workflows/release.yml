@@ -93,10 +93,22 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
+          # latest=auto, driven by the semver tag types below. This workflow
+          # only runs on a v* TAG push, where {{is_default_branch}} is false —
+          # so the previous `type=raw,value=latest,enable={{is_default_branch}}`
+          # could never produce a :latest tag, while docs/deployment/docker.md
+          # tells people to pull :latest in eight places and the k8s
+          # kustomization pins newTag: latest.
+          #
+          # Verified in metadata-action's source rather than from its docs:
+          # procSemver sets its internal `latest` flag only when
+          # semver.prerelease(version) is empty, and the flavor is applied as
+          # `latest == 'auto' ? latest : ...`. So v0.1.0 gets :latest and
+          # v0.1.0-rc.1 does not, which matches goreleaser's prerelease: auto.
+          flavor: latest=auto
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
