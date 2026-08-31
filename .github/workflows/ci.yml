@@ -161,8 +161,34 @@ jobs:
           # quote characters as part of the pattern and the exclusion silently
           # does nothing — verified by reproducing both forms against the real
           # binary. A config file has no quoting layer to get wrong.
-          args: --config lychee.toml '**/*.md'
+          # Directory inputs, not a glob: this action passes `args` through with
+          # quoting intact, so a quoted '**/*.md' reaches lychee as a literal
+          # pattern including the quotes and it exits 1 with
+          # "recursive wildcards must form a single path component". Reproduced
+          # against the real binary both ways before settling on this.
+          #
+          # `.github` is listed separately because lychee's directory walk skips
+          # dot-directories, so PULL_REQUEST_TEMPLATE.md would be missed —
+          # silently, which is the failure mode worth avoiding here.
+          args: --config lychee.toml . .github
           fail: true
+      # Coverage guard. The link check is only as good as its input set, and
+      # both previous input forms silently dropped files: a quoted glob checked
+      # nothing at all, a bare directory skipped .github. Compare what lychee
+      # would read against what git tracks.
+      - name: every tracked markdown file is actually checked
+        run: |
+          docker run --rm -v "$PWD":/input -w /input lycheeverse/lychee:latest \
+            --config lychee.toml --dump-inputs . .github 2>/dev/null \
+            | grep '\.md$' | sed 's|^/input/||; s|^\./||' | sort -u > /tmp/scanned.txt
+          git ls-files '*.md' | sort -u > /tmp/tracked.txt
+          missing=$(comm -23 /tmp/tracked.txt /tmp/scanned.txt)
+          if [ -n "$missing" ]; then
+            echo "these tracked markdown files are not being link-checked:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "ok: all $(wc -l < /tmp/tracked.txt | tr -d ' ') tracked markdown files are checked"
 
   release-config:
     name: release config
