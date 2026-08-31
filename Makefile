@@ -22,6 +22,10 @@ PKG_FLOORS ?= internal/sync:85 internal/webui:88 internal/config:90 \
 BIN      := bin/calendar-bridge
 COVEROUT := coverage.out
 
+# Must match prepare.sh's CB_DEMO_DIR default: `make demos` puts this on PATH
+# so each tape's `Require calendar-bridge` can find the fixture binary.
+DEMO_DIR ?= /tmp/calendar-bridge-demo
+
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -126,7 +130,7 @@ tools: ## Install the pinned lint and vulnerability tools
 	$(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 .PHONY: ci
-ci: build vet fmt-check test-race cover lint vuln ## Everything CI runs
+ci: build vet fmt-check test-race cover lint vuln ## The CI check subset (not fuzz/demos/screenshots)
 	@echo "ci: all checks passed"
 
 .PHONY: screenshots
@@ -136,7 +140,14 @@ screenshots: ## Regenerate the web UI screenshots from the fixture config
 .PHONY: demos
 demos: ## Regenerate the terminal demo GIFs (requires vhs)
 	@command -v vhs >/dev/null || { echo "vhs not found: https://github.com/charmbracelet/vhs"; exit 1; }
-	for tape in scripts/demos/*.tape; do vhs "$$tape"; done
+	@# The fixture must exist BEFORE vhs runs. Nothing invoked prepare.sh
+	@# before, so `make demos` failed at each tape's `Require calendar-bridge`
+	@# with no hint that a setup step was missing.
+	./scripts/demos/prepare.sh
+	@# And the fixture directory must be on PATH here, not just inside the
+	@# recorded shell: `Require` is evaluated when the tape starts, before the
+	@# tape's own line that extends PATH for the recording.
+	for tape in scripts/demos/*.tape; do PATH="$(DEMO_DIR):$$PATH" vhs "$$tape"; done
 
 .PHONY: clean
 clean: ## Remove build and coverage artifacts

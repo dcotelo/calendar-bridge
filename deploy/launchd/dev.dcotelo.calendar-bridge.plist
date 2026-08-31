@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for calendar-bridge (macOS).
+
+  Install:
+    mkdir -p ~/Library/LaunchAgents ~/Library/Logs
+    sed -e "s|__HOME__|$HOME|g" \
+        -e "s|__BINARY__|$(command -v calendar-bridge)|g" \
+        deploy/launchd/dev.dcotelo.calendar-bridge.plist \
+      > ~/Library/LaunchAgents/dev.dcotelo.calendar-bridge.plist
+    launchctl load -w ~/Library/LaunchAgents/dev.dcotelo.calendar-bridge.plist
+
+  A LaunchAgent (not a LaunchDaemon): it runs as you, while you are logged in,
+  with access to your home directory. calendar-bridge needs no privileges.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.dcotelo.calendar-bridge</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__BINARY__</string>
+    <string>run</string>
+    <string>-config</string>
+    <string>__HOME__/.config/calendar-bridge/config.yaml</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart if it exits, including after the Mac wakes from sleep. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Back off between restarts so a bad config does not spin. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>WorkingDirectory</key>
+  <string>__HOME__/.config/calendar-bridge</string>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/calendar-bridge.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/calendar-bridge.err.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <!-- Be a good citizen on battery. -->
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>5</integer>
+</dict>
+</plist>

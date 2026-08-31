@@ -4,8 +4,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/url"
@@ -159,10 +161,41 @@ type WebUI struct {
 }
 
 // Load reads and parses a YAML config file at path.
+// maxConfigBytes bounds how much of a config file is read into MEMORY, so a
+// runaway or wrong file cannot exhaust the heap before it is rejected. Nothing
+// legitimate comes close: the example config is under 2 KiB.
+//
+// It does NOT bound parse time — see maxConfigKeys, which does. The two limits
+// address different failure modes and neither substitutes for the other.
+const maxConfigBytes = 1 << 20 // 1 MiB
+
+// maxConfigKeys bounds how many `key:` candidates a config may contain, counted
+// as ':' characters before parsing.
+//
+// The byte cap alone does NOT bound parse time. yaml.Unmarshal is
+// super-quadratic in the number of duplicate keys in one mapping, and the
+// pathological input is small: 20000 repeated keys is about 97 KiB, comfortably
+// under the 1 MiB cap, and does not finish in any useful time. Measured on this
+// struct:
+//
+//	 250 keys     5ms
+//	 500 keys    21ms
+//	1000 keys    99ms
+//	2000 keys   364ms
+//	3000 keys   764ms
+//
+// A line count would not work either: flow style (`{k: v, k: v, …}`) puts any
+// number of keys on one line. Counting ':' catches both shapes and is O(n).
+//
+// 2000 is ~20x headroom over a legitimate config — a real account block has
+// about ten, so eight accounts plus the global settings is roughly a hundred —
+// while holding worst-case parse time to a few hundred milliseconds.
+const maxConfigKeys = 2000
+
 func Load(path string) (*Config, error) {
 	// #nosec G304 -- path is an explicit CLI flag the operator passes to
 	// their own calendar-bridge invocation, not untrusted external input.
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		// Path-free: this error reaches the daemon's stderr, which under
 		// systemd is the journal and under Docker the container log. The
@@ -170,6 +203,36 @@ func Load(path string) (*Config, error) {
 		// wrapped *fs.PathError embeds the full path regardless of this
 		// format string, so its cause is stripped too.
 		return nil, fmt.Errorf("reading config file: %w", pathFree(err))
+	}
+	defer func() { _ = f.Close() }()
+
+	// Read at most one byte past the limit, rather than os.ReadFile followed by
+	// a length check: ReadFile allocates the WHOLE file first, so a huge or
+	// runaway file would exhaust memory before the check could reject it. The
+	// extra byte is what makes "at the limit" distinguishable from "over it".
+	data, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading config file: %w", pathFree(err))
+	}
+	if len(data) > maxConfigBytes {
+		return nil, fmt.Errorf("config file exceeds the %d-byte limit; this is not a calendar-bridge config", maxConfigBytes)
+	}
+	return loadBytes(data)
+}
+
+// loadBytes parses, validates and applies defaults to raw config bytes. It is
+// separate from Load so the parser can be fuzzed without a filesystem round
+// trip per iteration: FuzzLoad previously wrote a file and read it back on
+// every execution, which collapsed throughput to zero exec/sec and made the
+// fuzz job miss its deadline on a shared runner. File reading is covered by
+// ordinary tests; robustness of the parse belongs here.
+//
+// It returns a nil *Config with every error, which the fuzz target asserts.
+func loadBytes(data []byte) (*Config, error) {
+	// Bound the parse before entering it. See maxConfigKeys: the byte cap
+	// bounds memory, this bounds time, and neither substitutes for the other.
+	if n := bytes.Count(data, []byte{':'}); n > maxConfigKeys {
+		return nil, fmt.Errorf("config file has %d keys, over the %d-key limit; this is not a calendar-bridge config", n, maxConfigKeys)
 	}
 
 	var cfg Config

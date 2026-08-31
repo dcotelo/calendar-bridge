@@ -171,7 +171,28 @@ func (s *Server) Handler() http.Handler {
 	root := http.NewServeMux()
 	root.Handle("/api/", s.authMiddleware(s.csrfGuard(api)))
 	root.HandleFunc("/", s.handleIndex)
-	return root
+	return securityHeaders(root)
+}
+
+// securityHeaders sets the two headers that must be on EVERY response, at the
+// outermost layer so no handler can omit them.
+//
+// Setting them per-handler was not enough: handleIndex serves non-root paths
+// with http.NotFound, which writes its own 404 and never reached the helper
+// that sets them. Anything added later would have the same hole, and the
+// omission is invisible — a missing Cache-Control looks like nothing at all.
+//
+// no-store is right for every response here: this is a local admin surface
+// where the config and status are live, and an intermediary replaying any of
+// it — including a 401 or a 404 — is never useful. nosniff is set here too
+// even though http.Error and http.NotFound set it themselves, so the guarantee
+// does not depend on which writer a handler happened to use.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // csrfGuard rejects cross-site state-changing requests. In the default no-token

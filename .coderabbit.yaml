@@ -5,7 +5,17 @@ language: "en-US"
 
 reviews:
   profile: assertive
-  request_changes_workflow: true
+  # Advisory, not blocking. With this true, a CHANGES_REQUESTED review keeps
+  # blocking the PR until CodeRabbit submits a NEW review — and it often
+  # answers follow-ups with comments instead, so the block outlives the
+  # findings. Across the audit stack that produced two false blocks on PRs
+  # whose findings were all resolved and whose checks were all green, while
+  # genuine findings arrived as comments that changed no state.
+  #
+  # Nothing is lost by turning it off: branch protection on main requires the
+  # `test` check, and reviews remain visible and are still acted on. What
+  # changes is that a stale verdict no longer gates a merge.
+  request_changes_workflow: false
   high_level_summary: true
   auto_review:
     enabled: true

@@ -1,3 +1,20 @@
-# Default owners for everything in the repo.
-# Applies to all pull requests as suggested reviewers.
+# Default owner for everything in the repo.
 * @dcotelo
+
+# The correctness- and security-critical packages. Called out separately so a
+# change to either is visibly a different kind of review, and so a future
+# co-maintainer inherits the distinction rather than having to learn it.
+#
+#   internal/sync       the owned-block tagging invariant: never create an
+#                       untagged block, never delete or overwrite an event that
+#                       is not provably ours, never propagate event content.
+#   internal/googleauth OAuth token exchange and on-disk persistence.
+/internal/sync/         @dcotelo
+/internal/googleauth/   @dcotelo
+
+# Anything that can change what ships to a user, or what runs with elevated
+# permissions in CI.
+/.github/workflows/     @dcotelo
+/.goreleaser.yml        @dcotelo
+/Dockerfile             @dcotelo
+/deploy/                @dcotelo

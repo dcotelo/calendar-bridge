@@ -1,0 +1,28 @@
+// markdownlint configuration for calendar-bridge.
+//
+// Four default rules are switched off deliberately. Without this file the
+// linter reports ~560 violations, almost all of them these four, which buries
+// the ones that matter — the reason MD040 and MD031 problems sat unnoticed
+// until a reviewer pointed at them.
+{
+  "config": {
+    // Prose here wraps at 80, but tables, long URLs and pinned SHAs cannot
+    // without becoming unreadable. Reflowing a table to fit 80 columns costs
+    // more legibility than it buys.
+    "MD013": false,
+
+    // Tables use the compact `|---|---|` delimiter form throughout. The rule
+    // wants padded pipes; this is purely cosmetic and the existing style is
+    // consistent, which is the part that actually helps a reader.
+    "MD060": false,
+
+    // The README opens with a centred HTML banner (badges, a hero image) that
+    // Markdown cannot express. That layout is the point of the file.
+    "MD033": false,
+
+    // Same banner: the first line is <div>, not an H1. The document does have
+    // a title, rendered inside the banner.
+    "MD041": false
+  },
+  "globs": ["**/*.md", "!node_modules"]
+}

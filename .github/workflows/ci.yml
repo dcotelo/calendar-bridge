@@ -8,19 +8,79 @@ on:
 permissions:
   contents: read
 
+# Only the newest run per ref matters. Superseded runs are cancelled so a burst
+# of pushes doesn't queue several full matrices and report out of order.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  test-matrix:
+    name: test (${{ matrix.os }}, go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is in the matrix because the docs recommend a launchd unit and
+        # goreleaser ships darwin binaries; windows because goreleaser ships
+        # those too and internal/googleauth has a Windows-specific branch in its
+        # file-permission check.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go: ["stable"]
+        include:
+          - os: ubuntu-latest
+            go: "oldstable"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+          check-latest: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -race
+
+  # DO NOT DELETE OR RENAME. This job looks redundant and is not.
+  #
+  # Branch protection on main requires a status check named exactly `test`. The
+  # matrix above reports as `test (ubuntu-latest, go stable)` and so on, so
+  # after the matrix was introduced no context named `test` existed and GitHub
+  # waited forever for one that would never report — every PR sat BLOCKED with
+  # all checks green.
+  #
+  # This aggregator provides that context. Because it depends on the matrix and
+  # inspects the needs result, adding or removing a matrix leg cannot break the
+  # required check, and the branch-protection setting never has to change.
+  #
+  # `if: always()` plus an explicit result check, not a bare `needs:`: without
+  # always() this job is SKIPPED when the matrix fails, and a skipped required
+  # check is not a failed one — the PR would go back to waiting forever.
   test:
+    name: test
+    runs-on: ubuntu-latest
+    needs: test-matrix
+    if: always()
+    steps:
+      - name: every test matrix leg succeeded
+        run: |
+          result='${{ needs.test-matrix.result }}'
+          echo "test-matrix result: $result"
+          if [ "$result" != "success" ]; then
+            echo "the test matrix did not succeed"
+            exit 1
+          fi
+
+  gofmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./... -race -cover
       - name: gofmt check
         run: |
           fmt_out=$(gofmt -l .)
@@ -29,6 +89,30 @@ jobs:
             echo "$fmt_out"
             exit 1
           fi
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # The same target developers run locally, so a green `make cover` means a
+      # green job. It enforces an overall floor plus a per-package floor for
+      # every package that carries logic.
+      - run: make cover
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 14
 
   lint:
     runs-on: ubuntu-latest
@@ -36,7 +120,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
@@ -49,7 +133,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       # Pinned to a tested release rather than @latest so a compromised or
@@ -57,3 +141,212 @@ jobs:
       # silently start passing) every PR in this repo.
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - run: govulncheck ./...
+
+  fuzz:
+    name: fuzz (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # A short budget per target: enough to catch a regression that breaks the
+      # seed corpus or panics immediately, without turning every PR into a
+      # multi-minute fuzzing session.
+      - run: make fuzz FUZZTIME=20s
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      # Build only, never push, on PRs: the release workflow owns publishing.
+      # This exists so a Dockerfile change that doesn't build is caught before
+      # a tag, not during one.
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  markdown:
+    name: markdown lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Config and globs live in .markdownlint-cli2.jsonc, so this runs the same
+      # way locally (`npx markdownlint-cli2`) as it does here. Four default
+      # rules are switched off there with reasons; everything else is enforced.
+      #
+      # Added because MD040 and MD031 problems accumulated unnoticed across the
+      # docs — 23 of them — while nothing checked.
+      - run: npx --yes markdownlint-cli2@0.23.2
+
+  links:
+    name: markdown links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          # Everything lives in lychee.toml, including the exclusions. A regex
+          # in this args string has to survive YAML folding AND the action's
+          # shell splitting: passed with its quotes intact, lychee receives the
+          # quote characters as part of the pattern and the exclusion silently
+          # does nothing — verified by reproducing both forms against the real
+          # binary. A config file has no quoting layer to get wrong.
+          # Directory inputs, not a glob: this action passes `args` through with
+          # quoting intact, so a quoted '**/*.md' reaches lychee as a literal
+          # pattern including the quotes and it exits 1 with
+          # "recursive wildcards must form a single path component". Reproduced
+          # against the real binary both ways before settling on this.
+          #
+          # `.github` is listed separately because lychee's directory walk skips
+          # dot-directories, so PULL_REQUEST_TEMPLATE.md would be missed —
+          # silently, which is the failure mode worth avoiding here.
+          args: --config lychee.toml . .github
+          fail: true
+      # Coverage guard. The link check is only as good as its input set, and
+      # both previous input forms silently dropped files: a quoted glob checked
+      # nothing at all, a bare directory skipped .github. Compare what lychee
+      # would read against what git tracks.
+      - name: every tracked markdown file is actually checked
+        run: |
+          # The ACTION's lychee, not a docker image: lychee-action appends its
+          # install dir to $GITHUB_PATH, so `lychee` here is the same pinned
+          # binary the check above ran. Pulling lycheeverse/lychee:latest would
+          # have let the guard measure one version's traversal while the check
+          # performed another's — the guard acquiring the exact defect it
+          # exists to catch.
+          # The dump runs on its own so its failure is reported as its own
+          # failure. A lychee that cannot even enumerate inputs is a different
+          # problem from a missing file, and should not be reported as one.
+          if ! lychee --config lychee.toml --dump-inputs . .github > /tmp/dump.txt 2>/tmp/dump.err; then
+            echo "lychee --dump-inputs failed:"
+            cat /tmp/dump.err
+            exit 1
+          fi
+
+          # Filtering is separate, and its status is deliberately ignored: this
+          # shell runs with -o pipefail, so a grep that matches nothing would
+          # abort the step here and the explicit diagnostic below would never
+          # print. Failing closed is right; failing closed WITHOUT saying why
+          # defeats the point of the guard.
+          #
+          # Normalise to repo-relative paths: --dump-inputs may emit "./x.md"
+          # or an absolute path under the workspace, and either would otherwise
+          # look like a missing file.
+          grep '\.md$' /tmp/dump.txt \
+            | sed "s|^$PWD/||; s|^\./||" \
+            | sort -u > /tmp/scanned.txt || true
+          git ls-files '*.md' | sort -u > /tmp/tracked.txt
+
+          # An empty input set must fail rather than vacuously satisfy comm —
+          # the whole point of this guard is that "checked nothing" is a
+          # failure, not a pass.
+          if [ ! -s /tmp/scanned.txt ]; then
+            echo "lychee reported no markdown inputs at all; the link check is not reading anything"
+            echo "--- raw --dump-inputs output ---"
+            cat /tmp/dump.txt
+            exit 1
+          fi
+
+          missing=$(comm -23 /tmp/tracked.txt /tmp/scanned.txt)
+          if [ -n "$missing" ]; then
+            echo "these tracked markdown files are not being link-checked:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "ok: all $(wc -l < /tmp/tracked.txt | tr -d ' ') tracked markdown files are checked"
+
+  release-config:
+    name: release config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # goreleaser reads tags for the version it stamps into the binary.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # A drift guard: the two version strings must stay equal, or this job
+      # validates a goreleaser that never runs.
+      #
+      # It runs BEFORE the goreleaser steps on purpose. Placed after them, a
+      # drifted pin would have already validated and snapshot-built with the
+      # wrong version — reporting a green check for a goreleaser that release.yml
+      # does not use — and only then failed. Fail before doing the wrong work.
+      - name: the pinned goreleaser version matches release.yml
+        run: |
+          # Scoped to goreleaser-action steps, and bounded by the STEP rather
+          # than a fixed line window. Matching every quoted `version:` in the
+          # file would make any unrelated action that takes a version input
+          # look like drift; a fixed `grep -A N` window instead breaks whenever
+          # a comment above the input grows past N lines, which it already did
+          # once while writing this.
+          gr_version() {
+            awk '
+              /^[[:space:]]*-[[:space:]]+uses:[[:space:]]*goreleaser\/goreleaser-action@/ { instep=1; next }
+              instep && /^[[:space:]]*-[[:space:]]/ { instep=0 }
+              instep && match($0, /version:[[:space:]]*"[0-9][0-9.]*"/) {
+                v = substr($0, RSTART, RLENGTH)
+                gsub(/version:[[:space:]]*"|"/, "", v)
+                print v
+              }
+            ' "$1" | sort -u
+          }
+          ci_v=$(gr_version .github/workflows/ci.yml)
+          rel_v=$(gr_version .github/workflows/release.yml)
+
+          # Empty means the extraction stopped matching, not that the versions
+          # agree. Without this the guard would silently pass on "" == "".
+          if [ -z "$ci_v" ] || [ -z "$rel_v" ]; then
+            echo "could not read a goreleaser version from one of the workflows:"
+            echo "  ci.yml:      '$ci_v'"
+            echo "  release.yml: '$rel_v'"
+            exit 1
+          fi
+          # More than one distinct version within a file is drift too.
+          if [ "$(printf '%s\n' "$ci_v" | wc -l)" -ne 1 ]; then
+            echo "ci.yml pins more than one goreleaser version:"
+            printf '%s\n' "$ci_v"
+            exit 1
+          fi
+          if [ "$ci_v" != "$rel_v" ]; then
+            echo "goreleaser version drift:"
+            echo "  ci.yml:      $ci_v"
+            echo "  release.yml: $rel_v"
+            exit 1
+          fi
+          echo "ok: both pin $ci_v"
+      # The release workflow only runs on a tag, so until this job existed a
+      # broken .goreleaser.yml was discovered DURING a release — the worst
+      # moment, and unfixable without cutting another tag. A snapshot build
+      # exercises the same config and the same build matrix, publishes nothing,
+      # and runs on every pull request.
+      #
+      # Keep this version identical to the one in release.yml. Its whole value
+      # is that the thing validated here is the thing that runs there.
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: "2.12.7"
+          args: check
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: "2.12.7"
+          args: build --snapshot --clean

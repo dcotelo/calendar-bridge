@@ -1,0 +1,32 @@
+# Fixture configuration for the documentation screenshots.
+#
+# Everything here is synthetic. The account names are invented, the calendar
+# IDs are "primary", and the credential and token files this config points at
+# are generated at capture time by capture.sh with obviously-fake contents —
+# they are never read by anything that talks to Google, because the screenshot
+# run only exercises the `ui` subcommand, which does no calendar I/O until
+# someone presses "Sync now".
+#
+# __FIXTURE_DIR__ is substituted with the temporary capture directory.
+
+accounts:
+  - name: personal
+    credentials_file: __FIXTURE_DIR__/secrets/personal-credentials.json
+    token_file: __FIXTURE_DIR__/secrets/personal-token.json
+    calendar_id: primary
+  - name: work-acme
+    credentials_file: __FIXTURE_DIR__/secrets/work-acme-credentials.json
+    token_file: __FIXTURE_DIR__/secrets/work-acme-token.json
+    calendar_id: primary
+  - name: work-globex
+    credentials_file: __FIXTURE_DIR__/secrets/work-globex-credentials.json
+    token_file: __FIXTURE_DIR__/secrets/work-globex-token.json
+    calendar_id: primary
+
+poll_interval: 5m
+lookahead_days: 30
+block_title: "Busy (calendar-bridge)"
+
+web_ui:
+  enabled: true
+  listen_addr: "127.0.0.1:8791"

@@ -1,0 +1,38 @@
+name: Secret scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "13 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitleaks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: a secret committed and later removed is still in the
+          # history and still needs rotating, and the scan below walks commit
+          # diffs rather than just the working tree.
+          #
+          # Known gap, verified rather than assumed: gitleaks diffs each commit
+          # against its parent, so the ROOT commit is not scanned in git mode.
+          # A secret introduced in a repository's very first commit and later
+          # deleted is invisible to both modes — history mode never diffs it,
+          # and tree mode no longer sees the file. Non-root commits are caught
+          # normally. This repository's root commit is clean (checked with a
+          # full-tree scan, which does read every file present).
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

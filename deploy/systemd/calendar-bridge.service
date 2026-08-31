@@ -1,0 +1,95 @@
+# systemd USER unit for calendar-bridge.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   sed "s|__BINARY__|$(command -v calendar-bridge)|g" \
+#     deploy/systemd/calendar-bridge.service > ~/.config/systemd/user/calendar-bridge.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now calendar-bridge
+#   sudo loginctl enable-linger "$USER"   # keep running when logged out
+#
+# A user unit, not a system one: the OAuth tokens live in the user's home
+# directory and the process needs no privileges whatsoever.
+
+[Unit]
+Description=calendar-bridge — busy-time sync across Google Calendar accounts
+Documentation=https://github.com/dcotelo/calendar-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=__BINARY__ run -config %h/.config/calendar-bridge/config.yaml
+
+# Restart on failure, but back off so a persistent misconfiguration (a bad
+# config, a missing token) does not become a hot restart loop.
+Restart=on-failure
+RestartSec=30s
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# SIGTERM cancels the in-flight pass and the process exits promptly. A partial
+# pass is safe — every operation is idempotent — so a short grace period is
+# enough and there is nothing to drain.
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+
+# --- hardening -------------------------------------------------------------
+# calendar-bridge needs: outbound HTTPS, read access to its config and
+# credentials, and WRITE access to its token files (tokens are re-persisted
+# when Google refreshes or rotates them). Nothing else.
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# The home directory is read-only EXCEPT the config directory, which must be
+# writable so refreshed tokens can be persisted. Making the whole home
+# read-only here is the most common cause of "it worked interactively".
+ProtectHome=read-only
+ReadWritePaths=%h/.config/calendar-bridge
+
+# Outbound network only; no listening sockets are needed unless you enable the
+# web UI or the metrics endpoint, both of which bind loopback.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Egress restriction is deliberately NOT enabled here, and the two directives
+# below are left commented on purpose.
+#
+# calendar-bridge must reach accounts.google.com and *.googleapis.com. With
+# `IPAddressDeny=any` plus `IPAddressAllow=localhost` active, every sync fails
+# with a network error and the daemon looks broken for a reason that has
+# nothing to do with its configuration. Google's API ranges are not stable, so
+# a correct static allowlist is not achievable.
+#
+# If you want to restrict egress, do it at the firewall, which can resolve and
+# follow those ranges. If you enable these anyway, you must allow Google's
+# current ranges yourself and keep them updated.
+#
+#IPAddressDeny=any
+#IPAddressAllow=localhost
+
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Logs go to the journal.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=calendar-bridge
+
+[Install]
+WantedBy=default.target

@@ -11,7 +11,7 @@ policy at this stage.
 **Do not open a public GitHub issue for security vulnerabilities.**
 
 Report privately via [GitHub Security Advisories](https://github.com/dcotelo/calendar-bridge/security/advisories/new)
-for this repository. If that's unavailable, email me@dcotelo.dev with
+for this repository. If that's unavailable, email <me@dcotelo.dev> with
 "calendar-bridge security" in the subject.
 
 Please include:

@@ -1,0 +1,35 @@
+# Minimal calendar-bridge deployment.
+#
+#   1. Create the Secret from your real files (do NOT commit them):
+#        kubectl create namespace calendar-bridge
+#        kubectl -n calendar-bridge create secret generic calendar-bridge-config \
+#          --from-file=config.yaml=./config.yaml \
+#          --from-file=personal-credentials.json=./secrets/personal-credentials.json \
+#          --from-file=personal-token.json=./secrets/personal-token.json \
+#          --from-file=work-acme-credentials.json=./secrets/work-acme-credentials.json \
+#          --from-file=work-acme-token.json=./secrets/work-acme-token.json
+#
+#   2. kubectl apply -k deploy/k8s
+#
+# See docs/deployment/kubernetes.md — in particular the note about token
+# persistence, which is the one thing this manifest cannot solve for you.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: calendar-bridge
+
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/name: calendar-bridge
+      app.kubernetes.io/part-of: calendar-bridge
+
+images:
+  - name: ghcr.io/dcotelo/calendar-bridge
+    newTag: latest
