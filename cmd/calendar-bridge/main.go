@@ -306,6 +306,27 @@ type passReport struct {
 	Failed      []string `json:"failed_accounts,omitempty"`
 }
 
+// wasInterrupted reports whether a failed pass was cut short by SIGINT/SIGTERM
+// rather than by a genuine error. syncErr is what SyncOnce returned; ctxErr is
+// the state of the *signal* context (not the per-cycle timeout context).
+//
+// Both conditions are load-bearing:
+//
+//   - ctxErr != nil alone would misclassify any failure that happened to land
+//     just before a signal: a 401 returning microseconds before SIGINT would
+//     exit 0 and look like a clean shutdown, silently hiding a broken account.
+//   - errors.Is(syncErr, context.Canceled) alone would treat the per-cycle
+//     timeout as a shutdown, because a timed-out cycle also cancels. The
+//     signal context is the one that distinguishes "operator asked to stop"
+//     from "this pass took too long", and a timeout must exit non-zero.
+//
+// A pass that genuinely failed and was then cancelled wraps both, and counts
+// as interrupted: the operator asked it to stop, and the next run re-reports
+// anything still wrong.
+func wasInterrupted(syncErr, ctxErr error) bool {
+	return syncErr != nil && ctxErr != nil && errors.Is(syncErr, context.Canceled)
+}
+
 func runSyncOnce(args []string) {
 	fs := flag.NewFlagSet("sync-once", flag.ContinueOnError)
 	dryRun := fs.Bool("dry-run", false, "report what would change without writing to any calendar")
@@ -332,23 +353,21 @@ func runSyncOnce(args []string) {
 	defer cancel()
 	res, syncErr := engine.SyncOnce(cycleCtx)
 
-	// A SIGINT/SIGTERM during this pass cancels ctx (and therefore cycleCtx),
-	// which SyncOnce surfaces as an error. That's an intentional shutdown, not
-	// a failure — exit 0. Genuine timeouts and API errors still exit non-zero.
-	interrupted := syncErr != nil && ctx.Err() != nil
+	interrupted := wasInterrupted(syncErr, ctx.Err())
 
 	if *asJSON {
 		rep := passReport{
-			Version:    versionString(),
-			DryRun:     *dryRun,
-			OK:         syncErr == nil,
-			StartedAt:  res.Started.UTC().Format(time.RFC3339),
-			DurationMS: res.Duration().Milliseconds(),
-			Created:    res.Created, Updated: res.Updated,
+			Version:     versionString(),
+			DryRun:      *dryRun,
+			OK:          syncErr == nil || interrupted,
+			Interrupted: interrupted,
+			StartedAt:   res.Started.UTC().Format(time.RFC3339),
+			DurationMS:  res.Duration().Milliseconds(),
+			Created:     res.Created, Updated: res.Updated,
 			Deleted: res.Deleted, Skipped: res.Skipped,
 			Healthy: res.HealthyAccounts, Failed: res.FailedAccounts,
 		}
-		if syncErr != nil {
+		if syncErr != nil && !interrupted {
 			rep.Error = syncErr.Error()
 		}
 		enc := json.NewEncoder(os.Stdout)

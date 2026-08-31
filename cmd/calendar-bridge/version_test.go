@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -105,6 +108,48 @@ func TestPassReport_InterruptedIsNotAFailure(t *testing.T) {
 			_, hasInterrupted := got["interrupted"]
 			if hasInterrupted != tc.rep.Interrupted {
 				t.Errorf("interrupted field present = %v, want %v", hasInterrupted, tc.rep.Interrupted)
+			}
+		})
+	}
+}
+
+// The exact scenario the classifier exists to prevent: an API failure that
+// returns just before a shutdown signal arrives must still exit non-zero. A
+// masked failure is the worst outcome here — the operator sees exit 0 and
+// believes a broken account synced.
+func TestWasInterrupted(t *testing.T) {
+	apiErr := errors.New("googleapi: Error 401: Invalid Credentials")
+	timeout := fmt.Errorf("account a: %w", context.DeadlineExceeded)
+	cancelled := fmt.Errorf("account a: %w", context.Canceled)
+
+	cases := []struct {
+		name    string
+		syncErr error
+		ctxErr  error
+		want    bool
+	}{
+		{"clean pass, no signal", nil, nil, false},
+		{"clean pass, signal after the work finished", nil, context.Canceled, false},
+		{"API failure, no signal", apiErr, nil, false},
+
+		// The regression this guards. Both are non-nil, so a check on ctxErr
+		// alone would wrongly return true and exit 0.
+		{"API failure racing a shutdown signal", apiErr, context.Canceled, false},
+
+		// A cycle that blew the per-pass timeout also produces a cancelled
+		// cycle context, but the signal context is untouched. That is a
+		// failure, not a shutdown.
+		{"per-cycle timeout, no signal", timeout, nil, false},
+		{"per-cycle timeout wrapping Canceled, no signal", cancelled, nil, false},
+
+		{"genuine shutdown mid-pass", cancelled, context.Canceled, true},
+		{"genuine shutdown, bare Canceled", context.Canceled, context.Canceled, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wasInterrupted(tc.syncErr, tc.ctxErr); got != tc.want {
+				t.Errorf("wasInterrupted(%v, %v) = %v, want %v", tc.syncErr, tc.ctxErr, got, tc.want)
 			}
 		})
 	}
