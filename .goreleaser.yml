@@ -117,7 +117,10 @@ release:
       --certificate-identity-regexp '^https://github\.com/dcotelo/calendar-bridge/\.github/workflows/release\.yml@refs/tags/v' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
       checksums.txt
+    # Linux:
     sha256sum -c checksums.txt --ignore-missing
+    # macOS (no GNU coreutils; shasum ships with the system):
+    shasum -a 256 -c checksums.txt --ignore-missing
     ```
 
     Container image (multi-arch, `linux/amd64` and `linux/arm64`):
