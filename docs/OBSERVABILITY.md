@@ -8,8 +8,8 @@ metrics plus liveness and readiness probes.
 Nothing here carries event **titles**, descriptions, locations, attendees,
 calendar IDs, OAuth tokens, or credential file contents. That is a property of
 the design rather than of the logging configuration: the neutral event model
-the engine works with has no content fields at all (see
-[ARCHITECTURE.md](ARCHITECTURE.md)).
+the engine works with has no content fields at all — see the `Event` struct in
+`internal/sync/provider.go`, which is the whole of what the engine can see.
 
 The two surfaces differ, and the difference matters if you ship logs somewhere
 you do not control:
