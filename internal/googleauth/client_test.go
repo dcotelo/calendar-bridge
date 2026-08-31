@@ -14,6 +14,21 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// assertPathFree fails if err leaks the secrets directory. Every Client error
+// reaches the daemon's stderr — the systemd journal, or the Docker log — so
+// the on-disk location of the credential material must not be in it. Asserted
+// at each error site rather than only in the dedicated redaction test, so a
+// regression is caught by the test that owns the behaviour.
+func assertPathFree(t *testing.T, dir string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if strings.Contains(err.Error(), dir) {
+		t.Errorf("error discloses the secrets directory %q: %v", dir, err)
+	}
+}
+
 func TestClient_MissingTokenFileReportsNeedsAuth(t *testing.T) {
 	dir := t.TempDir()
 	creds := writeFile(t, dir, "credentials.json", fakeCredentials)
@@ -22,6 +37,7 @@ func TestClient_MissingTokenFileReportsNeedsAuth(t *testing.T) {
 	if !errors.Is(err, ErrNeedsAuth) {
 		t.Fatalf("Client with no token file = %v, want ErrNeedsAuth", err)
 	}
+	assertPathFree(t, dir, err)
 }
 
 func TestClient_CorruptTokenFileReportsUnreadable(t *testing.T) {
@@ -36,6 +52,7 @@ func TestClient_CorruptTokenFileReportsUnreadable(t *testing.T) {
 	if errors.Is(err, ErrNeedsAuth) {
 		t.Error("a corrupt token must not also report as needing auth; the fixes differ")
 	}
+	assertPathFree(t, dir, err)
 }
 
 func TestClient_MissingCredentialsFile(t *testing.T) {
@@ -47,6 +64,7 @@ func TestClient_MissingCredentialsFile(t *testing.T) {
 	if !strings.Contains(err.Error(), "reading credentials file") {
 		t.Errorf("error = %v, want it to name the credentials file as the problem", err)
 	}
+	assertPathFree(t, dir, err)
 }
 
 func TestClient_MalformedCredentialsFile(t *testing.T) {
@@ -59,6 +77,7 @@ func TestClient_MalformedCredentialsFile(t *testing.T) {
 	if !strings.Contains(err.Error(), "credentials file") {
 		t.Errorf("error = %v, want it to name the credentials file", err)
 	}
+	assertPathFree(t, dir, err)
 }
 
 func TestClient_SucceedsWithAValidTokenFile(t *testing.T) {

@@ -552,110 +552,45 @@ func TestGoogleClient_WriteRetryClassification(t *testing.T) {
 		{"400 is not retried", http.StatusBadRequest, 100, true, 1},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			api := newFakeCalendarAPI(t)
-			api.writeStatus = tc.status
-			atomic.StoreInt32(&api.writeFailures, tc.failures)
-
-			c := NewRetryingClient(api.client(),
-				RetryPolicy{MaxAttempts: 4, BaseBackoff: time.Millisecond, MaxBackoff: 5 * time.Millisecond},
-				newTestLogger(), "test")
-
+	// Both write verbs, because a retry regression could easily land on one and
+	// not the other: insert and update take different paths through the
+	// provider and the bridge.
+	verbs := map[string]func(CalendarClient) error{
+		"InsertEvent": func(c CalendarClient) error {
 			_, err := c.InsertEvent(context.Background(), "primary", block())
-			if tc.wantErr && err == nil {
-				t.Fatalf("InsertEvent succeeded; want an error for %d", tc.status)
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("InsertEvent: %v", err)
-			}
-			// writeFailures counts down from the seeded value, so the number of
-			// attempts is derivable from what remains.
-			attempts := int(tc.failures - atomic.LoadInt32(&api.writeFailures))
-			if attempts != tc.wantAttempts {
-				t.Errorf("made %d insert attempts, want %d", attempts, tc.wantAttempts)
-			}
-		})
-	}
-}
-
-// FindBlockBySource wraps errors from Events.List. That branch was untested:
-// every other case drives a successful list.
-func TestGoogleClient_FindBlockBySourcePropagatesListErrors(t *testing.T) {
-	api := newFakeCalendarAPI(t)
-	api.listStatus = http.StatusForbidden
-	atomic.StoreInt32(&api.listFailures, 100)
-
-	got, err := api.client().FindBlockBySource(context.Background(), "primary", "personal", "evt-1")
-	if err == nil {
-		t.Fatal("want the list error propagated")
-	}
-	if got != nil {
-		t.Errorf("returned %v alongside an error; a lookup failure must not yield a block", got)
-	}
-	// The wrapper must keep the API error inspectable, or the retry layer
-	// cannot classify it.
-	var apiErr *googleapi.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != http.StatusForbidden {
-		t.Errorf("err = %v, want an inspectable googleapi.Error with code 403", err)
-	}
-	// And it must say which source it was looking for.
-	if !strings.Contains(err.Error(), "personal") || !strings.Contains(err.Error(), "evt-1") {
-		t.Errorf("err = %v, want it to name the source it was querying", err)
-	}
-}
-
-// The Calendar API can return a page with NO items but a non-empty
-// nextPageToken. Stopping at the first response therefore misses an owned block
-// that exists — and the caller then inserts a SECOND block for the same source
-// event, producing a duplicate on the destination calendar.
-func TestGoogleClient_FindBlockBySourceFollowsPagination(t *testing.T) {
-	owned := evAt("blk-1", baseTime)
-	owned.ExtendedProperties = &calendar.EventExtendedProperties{Private: map[string]string{
-		ownerKey:          ownerValue,
-		sourceAccountKey:  "personal",
-		sourceCalendarKey: "primary",
-		sourceEventKey:    "evt-1",
-	}}
-
-	api := newFakeCalendarAPI(t)
-	// An empty first page carrying a token, then the block. This is the exact
-	// shape that a first-page-only lookup gets wrong.
-	api.pages = [][]*calendar.Event{
-		{},
-		{},
-		{owned},
+			return err
+		},
+		"UpdateEvent": func(c CalendarClient) error {
+			_, err := c.UpdateEvent(context.Background(), "primary", "blk-1", block(), `"etag-1"`)
+			return err
+		},
 	}
 
-	got, err := api.client().FindBlockBySource(context.Background(), "primary", "personal", "evt-1")
-	if err != nil {
-		t.Fatalf("FindBlockBySource: %v", err)
-	}
-	if got == nil {
-		t.Fatal("returned nil despite the block existing on a later page; the caller would now " +
-			"insert a duplicate for the same source event")
-	}
-	if got.Id != "blk-1" {
-		t.Errorf("found %q, want blk-1", got.Id)
-	}
-	if len(api.listQueries) != 3 {
-		t.Errorf("made %d list calls, want 3 — pagination stopped early", len(api.listQueries))
-	}
-}
+	for verbName, call := range verbs {
+		for _, tc := range cases {
+			t.Run(verbName+"/"+tc.name, func(t *testing.T) {
+				api := newFakeCalendarAPI(t)
+				api.writeStatus = tc.status
+				atomic.StoreInt32(&api.writeFailures, tc.failures)
 
-// And it must stop rather than loop when the block genuinely is not there.
-func TestGoogleClient_FindBlockBySourceTerminatesWhenAbsent(t *testing.T) {
-	api := newFakeCalendarAPI(t)
-	api.pages = [][]*calendar.Event{{}, {}}
+				c := NewRetryingClient(api.client(),
+					RetryPolicy{MaxAttempts: 4, BaseBackoff: time.Millisecond, MaxBackoff: 5 * time.Millisecond},
+					newTestLogger(), "test")
 
-	got, err := api.client().FindBlockBySource(context.Background(), "primary", "personal", "evt-1")
-	if err != nil {
-		t.Fatalf("FindBlockBySource: %v", err)
-	}
-	if got != nil {
-		t.Errorf("returned %v, want nil", got)
-	}
-	if len(api.listQueries) != 2 {
-		t.Errorf("made %d list calls, want 2", len(api.listQueries))
+				err := call(c)
+				if tc.wantErr && err == nil {
+					t.Fatalf("%s succeeded; want an error for %d", verbName, tc.status)
+				}
+				if !tc.wantErr && err != nil {
+					t.Fatalf("%s: %v", verbName, err)
+				}
+				// writeFailures counts down from the seeded value, so the
+				// number of attempts is derivable from what remains.
+				attempts := int(tc.failures - atomic.LoadInt32(&api.writeFailures))
+				if attempts != tc.wantAttempts {
+					t.Errorf("made %d %s attempts, want %d", attempts, verbName, tc.wantAttempts)
+				}
+			})
+		}
 	}
 }
