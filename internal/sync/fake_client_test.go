@@ -148,7 +148,7 @@ func (f *fakeCalendarClient) InsertEvent(ctx context.Context, calendarID string,
 	return ev, nil
 }
 
-func (f *fakeCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
+func (f *fakeCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls.update++

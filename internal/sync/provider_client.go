@@ -119,7 +119,10 @@ func (c *providerClient) InsertEvent(ctx context.Context, calendarID string, ev 
 	return eventToGoogle(*created), nil
 }
 
-func (c *providerClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
+func (c *providerClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
+	// The neutral Provider carries no ETag: UpdateBlock does its own re-read
+	// and issues the conditional write itself, exactly as DeleteBlock does.
+	_ = ifMatchETag
 	if ev == nil {
 		return nil, fmt.Errorf("providerClient: UpdateEvent called with nil event")
 	}

@@ -42,7 +42,7 @@ func (e *etagClient) GetEvent(ctx context.Context, calendarID, id string) (*cale
 func (e *etagClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
 	return ev, nil
 }
-func (e *etagClient) UpdateEvent(ctx context.Context, calendarID, id string, ev *calendar.Event) (*calendar.Event, error) {
+func (e *etagClient) UpdateEvent(ctx context.Context, calendarID, id string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
 	return ev, nil
 }
 func (e *etagClient) DeleteEvent(ctx context.Context, calendarID, id, ifMatch string) error {
@@ -160,5 +160,111 @@ func TestInsertBlock_IdempotentReusesExisting(t *testing.T) {
 	}
 	if n := len(fake.ownedBlocks()); n != 1 {
 		t.Errorf("owned blocks = %d, want 1 (no duplicate created)", n)
+	}
+}
+
+// ---- update is conditional too ----
+//
+// UpdateBlock re-reads and verifies ownership, then writes. Without an If-Match
+// on that re-read's ETag the check and the write are not atomic: an event that
+// loses its owner tag in between would be overwritten. DeleteBlock has always
+// been conditional; these pin the same guarantee for updates.
+
+// updateETagClient serves a block via FindBlockBySource and models a one-time
+// 412 on update, swapping in whatever the concurrent writer left behind.
+type updateETagClient struct {
+	ev            *calendar.Event
+	afterConflict *calendar.Event
+	updates       int
+	failFirst412  bool
+	lastIfMatch   []string
+	conflicted    bool
+}
+
+func (u *updateETagClient) ListEvents(context.Context, string, time.Time, time.Time) ([]*calendar.Event, error) {
+	return nil, nil
+}
+func (u *updateETagClient) FindBlockBySource(context.Context, string, string, string) (*calendar.Event, error) {
+	if u.conflicted && u.afterConflict != nil {
+		return u.afterConflict, nil
+	}
+	return u.ev, nil
+}
+func (u *updateETagClient) GetEvent(context.Context, string, string) (*calendar.Event, error) {
+	return u.ev, nil
+}
+func (u *updateETagClient) InsertEvent(_ context.Context, _ string, ev *calendar.Event) (*calendar.Event, error) {
+	return ev, nil
+}
+func (u *updateETagClient) UpdateEvent(_ context.Context, _, _ string, ev *calendar.Event, ifMatch string) (*calendar.Event, error) {
+	u.updates++
+	u.lastIfMatch = append(u.lastIfMatch, ifMatch)
+	if u.failFirst412 && u.updates == 1 {
+		u.conflicted = true
+		return nil, &googleapi.Error{Code: 412}
+	}
+	return ev, nil
+}
+func (u *updateETagClient) DeleteEvent(context.Context, string, string, string) error { return nil }
+
+func ownedNeutral() Event {
+	return Event{Ownership: Ownership{
+		Owner: ownerValue, SourceAccount: "a", SourceCalendarID: "primary", SourceEventID: "e1",
+	}}
+}
+
+func updateSpans() (TimeSpan, TimeSpan) {
+	return TimeSpan{DateTime: "2026-03-12T10:00:00Z"}, TimeSpan{DateTime: "2026-03-12T11:00:00Z"}
+}
+
+func TestUpdateBlock_UsesETagIfMatch(t *testing.T) {
+	c := &updateETagClient{ev: ownedEvent("blk-1", `"etag-1"`)}
+	start, end := updateSpans()
+
+	if _, err := NewGoogleProvider(c).UpdateBlock(context.Background(), "primary", ownedNeutral(), "Busy", start, end); err != nil {
+		t.Fatalf("UpdateBlock: %v", err)
+	}
+	if len(c.lastIfMatch) != 1 || c.lastIfMatch[0] != `"etag-1"` {
+		t.Errorf("If-Match on update = %v, want the ETag from the re-read; without it the ownership "+
+			"check and the write are not atomic", c.lastIfMatch)
+	}
+}
+
+// A 412 means the event changed after the read: re-read, re-verify, retry once.
+func TestUpdateBlock_On412ReReadsAndUsesTheNewETag(t *testing.T) {
+	c := &updateETagClient{
+		ev:            ownedEvent("blk-1", `"etag-old"`),
+		afterConflict: ownedEvent("blk-1", `"etag-new"`),
+		failFirst412:  true,
+	}
+	start, end := updateSpans()
+
+	if _, err := NewGoogleProvider(c).UpdateBlock(context.Background(), "primary", ownedNeutral(), "Busy", start, end); err != nil {
+		t.Fatalf("UpdateBlock after a 412: %v", err)
+	}
+	if len(c.lastIfMatch) != 2 || c.lastIfMatch[1] != `"etag-new"` {
+		t.Errorf("If-Match sequence = %v, want the retry to use the freshly re-read etag-new", c.lastIfMatch)
+	}
+}
+
+// The case that matters: the event lost its owner tag between the read and the
+// write. The retry must REFUSE it rather than overwrite a real user event.
+func TestUpdateBlock_On412BecomesUntaggedRefuses(t *testing.T) {
+	untagged := ownedEvent("blk-1", `"etag-new"`)
+	delete(untagged.ExtendedProperties.Private, ownerKey)
+
+	c := &updateETagClient{
+		ev:            ownedEvent("blk-1", `"etag-old"`),
+		afterConflict: untagged,
+		failFirst412:  true,
+	}
+	start, end := updateSpans()
+
+	_, err := NewGoogleProvider(c).UpdateBlock(context.Background(), "primary", ownedNeutral(), "Busy", start, end)
+	if !errors.Is(err, ErrNotOwned) {
+		t.Fatalf("UpdateBlock = %v, want ErrNotOwned — an event that lost its owner tag must never be overwritten", err)
+	}
+	if c.updates != 1 {
+		t.Errorf("made %d update calls; the retry must be refused BEFORE writing", c.updates)
 	}
 }

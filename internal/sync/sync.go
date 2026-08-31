@@ -360,7 +360,10 @@ func (e *Engine) ensureBlock(ctx context.Context, src Account, srcEvent *calenda
 		updated.Start = copySpan(srcEvent.Start)
 		updated.End = copySpan(srcEvent.End)
 		updated.Summary = e.BlockTitle
-		result, err := dst.Client.UpdateEvent(ctx, dst.CalendarID, existing.Id, &updated)
+		// Conditional on the ETag we listed, mirroring the delete path: if the
+		// block changed since the fetch, the update fails its precondition
+		// rather than overwriting an event that may no longer be ours.
+		result, err := dst.Client.UpdateEvent(ctx, dst.CalendarID, existing.Id, &updated, existing.Etag)
 		if err != nil {
 			return outcomeUnchanged, err
 		}

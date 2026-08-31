@@ -127,11 +127,11 @@ func (c *retryingClient) InsertEvent(ctx context.Context, calendarID string, ev 
 	return out, err
 }
 
-func (c *retryingClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
+func (c *retryingClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
 	var out *calendar.Event
 	err := retry(ctx, c.policy, c.onRetry("UpdateEvent"), func() error {
 		var err error
-		out, err = c.inner.UpdateEvent(ctx, calendarID, eventID, ev)
+		out, err = c.inner.UpdateEvent(ctx, calendarID, eventID, ev, ifMatchETag)
 		return err
 	})
 	return out, err

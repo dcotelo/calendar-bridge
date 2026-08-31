@@ -510,8 +510,8 @@ func (w *windowProbe) InsertEvent(ctx context.Context, calendarID string, ev *ca
 	return w.inner.InsertEvent(ctx, calendarID, ev)
 }
 
-func (w *windowProbe) UpdateEvent(ctx context.Context, calendarID, id string, ev *calendar.Event) (*calendar.Event, error) {
-	return w.inner.UpdateEvent(ctx, calendarID, id, ev)
+func (w *windowProbe) UpdateEvent(ctx context.Context, calendarID, id string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
+	return w.inner.UpdateEvent(ctx, calendarID, id, ev, ifMatchETag)
 }
 
 func (w *windowProbe) DeleteEvent(ctx context.Context, calendarID, id, etag string) error {

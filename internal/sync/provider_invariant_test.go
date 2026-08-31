@@ -74,7 +74,7 @@ func TestProviderClient_UpdateRejectsUntaggedEvent(t *testing.T) {
 	fake := newFakeCalendarClient()
 	c := NewProviderClient(NewGoogleProvider(fake), "Busy")
 	ev := realEventIn("real-1", time.Hour, time.Hour) // untagged
-	_, err := c.UpdateEvent(context.Background(), "primary", "real-1", ev)
+	_, err := c.UpdateEvent(context.Background(), "primary", "real-1", ev, "")
 	if !errors.Is(err, ErrNotOwned) {
 		t.Fatalf("UpdateEvent err = %v, want ErrNotOwned for untagged event", err)
 	}
@@ -112,7 +112,7 @@ func TestProviderClient_UpdateConcurrentDeleteReturnsNil(t *testing.T) {
 		sourceCalendarKey: "primary",
 		sourceEventKey:    "real-1",
 	})
-	got, err := c.UpdateEvent(context.Background(), "primary", "missing-id", ev)
+	got, err := c.UpdateEvent(context.Background(), "primary", "missing-id", ev, "")
 	if err != nil {
 		t.Fatalf("UpdateEvent err = %v, want nil on concurrent delete", err)
 	}
@@ -271,9 +271,9 @@ func (l *looseFindClient) GetEvent(ctx context.Context, calendarID, eventID stri
 func (l *looseFindClient) InsertEvent(ctx context.Context, calendarID string, ev *calendar.Event) (*calendar.Event, error) {
 	return l.inner.InsertEvent(ctx, calendarID, ev)
 }
-func (l *looseFindClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event) (*calendar.Event, error) {
+func (l *looseFindClient) UpdateEvent(ctx context.Context, calendarID, eventID string, ev *calendar.Event, ifMatchETag string) (*calendar.Event, error) {
 	l.updated = true
-	return l.inner.UpdateEvent(ctx, calendarID, eventID, ev)
+	return l.inner.UpdateEvent(ctx, calendarID, eventID, ev, ifMatchETag)
 }
 func (l *looseFindClient) DeleteEvent(ctx context.Context, calendarID, eventID, ifMatchETag string) error {
 	return l.inner.DeleteEvent(ctx, calendarID, eventID, ifMatchETag)
