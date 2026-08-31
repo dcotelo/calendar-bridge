@@ -31,15 +31,24 @@ account's busy time block another's.
 
 ## What information crosses between my accounts?
 
-A start time, an end time, and the fixed `block_title` string. That is all.
+A start time, an end time, the fixed `block_title` string, and the bookkeeping
+that lets a block be matched back to its source.
 
-Titles, descriptions, locations, attendees and conferencing links are never
-copied. That is structural, not a setting: the internal event model has no
-fields for them.
+**No event content.** Titles, descriptions, locations, attendees and
+conferencing links are never copied. That is structural, not a setting: the
+internal event model has no fields for them.
+
+The bookkeeping is three private properties written onto the block: which
+account it came from (the name you chose in `config.yaml`), that account's
+`calendar_id`, and Google's opaque ID for the source event. They are what makes
+garbage collection safe — a block can be proven to belong to a source that is
+gone — so they are not optional. Full detail in
+[what crosses an account boundary](ARCHITECTURE.md#what-crosses-an-account-boundary).
 
 A colleague who can see your work calendar learns *when* you are busy — which is
 the point, and the same thing a Google free/busy share tells them. They do not
-learn what you are doing.
+learn what you are doing. If they can read the event's properties they can also
+see which of your accounts the block came from, though not what the event was.
 
 ## Will it delete my real events?
 
