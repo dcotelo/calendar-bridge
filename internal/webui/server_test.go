@@ -687,17 +687,135 @@ func TestGetConfig_ErrorDoesNotLeakTheConfigPath(t *testing.T) {
 	}
 }
 
-func TestAPIResponses_AreNotCacheable(t *testing.T) {
-	srv := newTestServer(t, "")
-	for _, path := range []string{"/api/config", "/api/status"} {
-		w := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(w, req(t, http.MethodGet, path, "", ""))
-		if got := w.Header().Get("Cache-Control"); got != "no-store" {
-			t.Errorf("%s Cache-Control = %q, want no-store", path, got)
-		}
-		if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
-			t.Errorf("%s X-Content-Type-Options = %q, want nosniff", path, got)
-		}
+// validConfigJSON is a well-formed PUT body: the request must be rejected for
+// the reason under test (cross-site, bad Origin), not for its contents.
+const validConfigJSON = `{"accounts":[
+  {"name":"personal","credentials_file":"a.json","token_file":"a-tok.json","calendar_id":"primary"},
+  {"name":"work","credentials_file":"b.json","token_file":"b-tok.json","calendar_id":"work-cal"}
+],"poll_interval":"10m","lookahead_days":60,"block_title":"DND","web_ui":{"auth_token":""}}`
+
+// Every response this server produces — success or rejection — must carry
+// no-store and nosniff. Error paths matter MORE than success paths here: an
+// intermediary that cached a 401 or a 403 would keep answering with it after
+// the operator fixed the token or the origin, and the rejections fire in
+// middleware, before any handler that would otherwise set the headers.
+//
+// http.Error sets nosniff on its own but never Cache-Control, which is why the
+// rejections go through plainError instead.
+func TestAPIResponses_AlwaysCarrySafetyHeaders(t *testing.T) {
+	cases := []struct {
+		name       string
+		server     func(t *testing.T) *Server
+		method     string
+		path       string
+		token      string
+		body       string
+		mutate     func(r *http.Request)
+		wantStatus int
+	}{
+		{
+			name:       "GET /api/config succeeds",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodGet,
+			path:       "/api/config",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "GET /api/status succeeds",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodGet,
+			path:       "/api/status",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "a config that cannot be loaded",
+			server: func(t *testing.T) *Server {
+				missing := filepath.Join(t.TempDir(), "absent", "config.yaml")
+				return newTestServer(t, "", func(o *Options) { o.ConfigPath = missing })
+			},
+			method:     http.MethodGet,
+			path:       "/api/config",
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:       "a request with no token when one is required",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "s3cret") },
+			method:     http.MethodGet,
+			path:       "/api/config",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "a request with the wrong token",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "s3cret") },
+			method:     http.MethodGet,
+			path:       "/api/config",
+			token:      "wrong",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "a state-changing request rejected as cross-site",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodPut,
+			path:       "/api/config",
+			body:       validConfigJSON,
+			mutate:     func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") },
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "a state-changing request rejected by Origin",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodPut,
+			path:       "/api/config",
+			body:       validConfigJSON,
+			mutate:     func(r *http.Request) { r.Header.Set("Origin", "http://evil.example") },
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "a request with a rebound Host",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodGet,
+			path:       "/api/config",
+			mutate:     func(r *http.Request) { r.Host = "attacker.example" },
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "malformed JSON on PUT",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodPut,
+			path:       "/api/config",
+			body:       "{not json",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "the index rejects a non-GET method",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodPost,
+			path:       "/",
+			wantStatus: http.StatusMethodNotAllowed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := tc.server(t)
+			r := req(t, tc.method, tc.path, tc.token, tc.body)
+			if tc.mutate != nil {
+				tc.mutate(r)
+			}
+
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, r)
+
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+			if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+			}
+		})
 	}
 }
 

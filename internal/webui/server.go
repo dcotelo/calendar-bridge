@@ -187,16 +187,16 @@ func (s *Server) csrfGuard(next http.Handler) http.Handler {
 		// configured, the token itself is the guard (a rebinding attacker
 		// can't obtain it), so we don't additionally constrain Host.
 		if s.authToken == "" && !hostIsLoopbackAuthority(r.Host) {
-			http.Error(w, "unexpected Host", http.StatusForbidden)
+			plainError(w, "unexpected Host", http.StatusForbidden)
 			return
 		}
 		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
-			http.Error(w, "cross-site request rejected", http.StatusForbidden)
+			plainError(w, "cross-site request rejected", http.StatusForbidden)
 			return
 		}
 		if origin := r.Header.Get("Origin"); origin != "" {
 			if u, err := url.Parse(origin); err != nil || u.Host != r.Host {
-				http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+				plainError(w, "cross-origin request rejected", http.StatusForbidden)
 				return
 			}
 		}
@@ -241,7 +241,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				s.logger.Warn("webui: rejected request with missing/invalid token",
 					"remote", r.RemoteAddr, "path", r.URL.Path)
 				w.Header().Set("WWW-Authenticate", "Bearer")
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				plainError(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 		}

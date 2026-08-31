@@ -31,6 +31,21 @@ func (s *Server) writeError(w http.ResponseWriter, status int, msg string) {
 	s.writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// plainError is http.Error plus the two headers every response from this
+// server carries. http.Error sets nosniff itself but not Cache-Control, and a
+// rejection is exactly the response least worth serving from a cache: an
+// intermediary that stored a 401 or a 403 would keep answering with it after
+// the operator fixed the token or the origin.
+//
+// Used for the rejections that fire before a handler runs (auth, Host,
+// cross-site) and for non-JSON handler errors; JSON responses go through
+// writeJSON, which sets the same headers.
+func plainError(w http.ResponseWriter, msg string, status int) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.Error(w, msg, status)
+}
+
 // handleGetConfig returns the current config as JSON.
 //
 // Note on safety: the Config struct contains only account metadata and file
@@ -155,13 +170,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		plainError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	nonce, err := newNonce()
 	if err != nil {
 		s.logger.Error("webui: generating CSP nonce", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		plainError(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
