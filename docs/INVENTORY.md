@@ -5,7 +5,7 @@ read out of the source at commit `85c4afc`; nothing is inferred from the README.
 
 ## 1. File tree
 
-```
+```text
 cmd/calendar-bridge/main.go        CLI entry point (447 loc)
 internal/config/                   YAML load/save/validate
 internal/googleauth/               OAuth2 flow, token persistence, perm checks
@@ -23,7 +23,7 @@ config.example.yaml, README.md, CONTRIBUTING.md, SECURITY.md, CODE_OF_CONDUCT.md
 
 ## 2. Package graph
 
-```
+```text
 cmd/calendar-bridge
   ├── internal/config
   ├── internal/googleauth ──> google.golang.org/api/calendar/v3, golang.org/x/oauth2
@@ -42,7 +42,8 @@ Direct runtime deps: 4 (`google.golang.org/api`, `golang.org/x/oauth2`,
 ## 3. Public surface per package
 
 ### internal/config
-```
+
+```go
 func IsLoopbackAddr(addr string) bool
 type Account, Config, WebUI, Webhook
 func Load(path string) (*Config, error)
@@ -51,7 +52,8 @@ func (*Config) Validate() error
 ```
 
 ### internal/googleauth
-```
+
+```go
 var Scopes = []string{calendar.CalendarEventsScope}
 var ErrNeedsAuth
 func Authorize(ctx, credentialsFile, tokenFile string) error
@@ -59,7 +61,8 @@ func Client(ctx, credentialsFile, tokenFile string, logger *slog.Logger) (*calen
 ```
 
 ### internal/sync
-```
+
+```go
 var ErrNotOwned
 type Account, Engine, Event, Ownership, TimeSpan, RetryPolicy
 type CalendarClient interface   (Google-typed; what Engine consumes)
@@ -73,7 +76,8 @@ func (*Engine) SyncOnce(ctx) error
 ```
 
 ### internal/webhook
-```
+
+```go
 type Channel, Target, Manager, Receiver, Debouncer
 type ChannelWatcher, Notifier interfaces
 func NewGoogleWatcher(map[string]*calendar.Service) ChannelWatcher
@@ -83,7 +87,8 @@ func NewDebouncer(time.Duration) *Debouncer
 ```
 
 ### internal/webui
-```
+
+```go
 type Options, Server, Status, StatusFunc, SyncFunc
 func New(Options) (*Server, error)
 func (*Server) Handler() http.Handler
@@ -95,7 +100,7 @@ func (*Server) Handler() http.Handler
 |---|---|---|---|
 | `auth` | `-config` (default `config.yaml`), `-account` (required) | Interactive OAuth2, writes token file | 0 ok; 1 missing `-account`, config load fail, unknown account, auth fail |
 | `sync-once` | `-config` | One pass, then exit | 0 ok **and** on SIGINT/SIGTERM mid-pass; 1 setup fail or sync error |
-| `run` | `-config` | Poll loop (+ optional push) until signal | 0 on signal; 1 setup/parse/webhook-bind fail |
+| `run` | `-config` | Poll loop (+ optional push) until signal | 0 on signal; 1 setup or webhook-bind failure; 2 invalid flag parsing |
 | `ui` | `-config` | Serve loopback config UI | 0 on signal; 1 config load fail, `web_ui.enabled=false`, non-loopback bind, listen error |
 | `help` / `-h` / `--help` | — | Usage to **stderr** | 0 |
 | *(no args / unknown)* | — | Usage to stderr | 1 |
@@ -147,7 +152,7 @@ neutral `sync.Event` model carries no content fields at all.
 
 ## 7. Tests and coverage
 
-```
+```text
 cmd/calendar-bridge     0.0%
 internal/config        85.3%
 internal/googleauth    44.0%

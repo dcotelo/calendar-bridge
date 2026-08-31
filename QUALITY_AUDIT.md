@@ -13,9 +13,11 @@ audited commit.
 This is a well-built small Go project — genuinely above average for a
 one-person side project. The ownership-tagging invariant is real, enforced at
 several layers, and covered by tests that attack it adversarially. Errors are
-wrapped, contexts are threaded, shutdown is clean, there are no panics, CI pins
-its actions by SHA, and the comments explain *why* rather than *what*. The
-README's honesty about limitations is a rare strength.
+wrapped, contexts are threaded, and shutdown is clean. Production wiring supplies
+loggers, but an `Engine` whose `Logger` is left at its zero value (`nil`) can panic
+when it processes an account (F-30). CI pins its actions by SHA, and the comments
+explain *why* rather than *what*. The README's honesty about limitations is a rare
+strength.
 
 Three things limit it:
 
@@ -44,7 +46,7 @@ holds under every input I could construct.
 
 | Dimension | Score | Justification |
 |---|:--:|---|
-| Architecture & Go standards | 4/5 | Clean package graph, no cycles, interface-at-consumer, wrapped errors, no panics, logger injected not global. Loses a point for a 370-line provider seam that production never touches. |
+| Architecture & Go standards | 4/5 | Clean package graph, no cycles, interface-at-consumer, and wrapped errors. Loggers are injected rather than global, but an `Engine` whose `Logger` is left at its zero value (`nil`) can panic when it processes an account (F-30). Loses a point for a 370-line provider seam that production never touches. |
 | Sync correctness | 3/5 | The ownership invariant is genuinely airtight. Calendar semantics are not: free/declined/all-day are unhandled, and the time-window edges are untested. |
 | Security | 4/5 | Loopback enforcement, DNS-rebinding guard, CSRF, constant-time auth, atomic 0600 config writes, per-file permission warnings. Loses a point for the OAuth refresh gap and non-atomic token writes. |
 | Testing & QA | 3/5 | 108 tests, adversarial where it counts, honest fakes. But no clock injection, no HTTP-level double, no fuzzing, no coverage gate, 0% on `cmd/`, and at least one tautological test padding the number. |
@@ -90,7 +92,7 @@ holds under every input I could construct.
 | F-27 | Correctness | Nit | S | `sync.go:204-210` | `block_title` changes never propagate to existing blocks. |
 | F-28 | Correctness | Nit | S | `sync.go:197` | A user-duplicated block is half-managed and eventually GC'd. Undocumented. |
 | F-29 | Go standards | Nit | S | `sync.go:191` | `deterministicBlockKey` is dead code, kept alive by a tautological test. |
-| F-30 | Go standards | Nit | S | `sync.go:95` | `Engine.Logger` has no nil guard; a zero-value `Engine` panics. |
+| F-30 | Go standards | Nit | S | `sync.go:95` | `Engine.Logger` has no nil guard; an otherwise configured `Engine` panics while processing an account if `Logger` is left nil. |
 
 ---
 
@@ -222,7 +224,7 @@ Add `Transparent bool` and `SelfResponse string` to `sync.Event`.
 
 `.goreleaser.yml:26` injects:
 
-```
+```text
 -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
 ```
 
@@ -497,8 +499,9 @@ Not dangerous, but undocumented and untested.
 deterministic. Dead code plus a test that can never fail.
 
 **F-30** `sync.go:95` — `Engine.Logger` is dereferenced with no nil check, and
-unlike `NewRetryingClient` (`retrying_client.go:44-46`) nothing defaults it. A
-zero-value `Engine` panics on the first account.
+unlike `NewRetryingClient` (`retrying_client.go:44-46`) nothing defaults it. An
+otherwise configured `Engine` with a nil `Logger` panics while processing its
+first account.
 
 ---
 
@@ -526,7 +529,8 @@ zero-value `Engine` panics on the first account.
 | 11 | Insert idempotency under ambiguous failure | Yes in production (`retrying_client.go:104-125`) and in the Provider (`google_provider.go:126-130`) | Yes — `TestRetryingClient_InsertEvent_ReconcilesAmbiguousResult`, `TestInsertBlock_IdempotentReusesExisting` | Well covered. |
 | 12 | Event content never crosses accounts | Yes, structurally — the block is built from `Summary: e.BlockTitle` and times only (`sync.go:214-228`), and neutral `Event` has no content fields | Implicitly | No explicit test asserting a created block carries none of the source's summary/description/attendees. Cheap to add and it guards the project's headline privacy claim. |
 
-**Summary: 6 of 17 rows fully covered, 4 partial, 7 with no coverage at all.**
+**Summary: 6 of 19 rows are fully covered, 2 are partially covered, and 11 have
+no coverage. “Partly” and “Implicitly” are both classified as partial coverage.**
 The gaps cluster in exactly two places: calendar semantics (5d–5h) and anything
 requiring control of time (6, 7, and by extension 9).
 
