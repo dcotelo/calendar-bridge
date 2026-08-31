@@ -170,10 +170,14 @@ func loadConfig(fs *flag.FlagSet, args []string) *config.Config {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		// config.Load embeds the config path in its error text. This is a
-		// daemon path — under systemd stderr is the journal, under Docker it is
-		// `docker logs` — so keep the layout out of it. The operator passed the
-		// path on the command line and does not need it echoed back.
+		// The error is deliberately dropped rather than printed. This is a
+		// daemon path — under systemd stderr is the journal, under Docker it
+		// is `docker logs` — so the on-disk layout stays out of it, and the
+		// operator passed the path on the command line anyway.
+		//
+		// config.Load is independently path-free (it strips the *fs.PathError
+		// cause), so printing err would be safe; the message below is kept
+		// stable on purpose instead. See reportConfigError.
 		reportConfigError()
 		os.Exit(exitConfig)
 	}
