@@ -35,8 +35,12 @@ The UI can rewrite `config.yaml`, so it is treated as privileged:
   no CDN) and served with a strict `Content-Security-Policy` built on a
   **per-response nonce** — no `unsafe-inline` — plus `default-src 'none'`,
   `base-uri 'none'`, `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
-  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
-  `Cache-Control: no-store` on every response.
+  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+
+  `Cache-Control: no-store` and `nosniff` are set by an outermost middleware
+  rather than by each handler, so they are on **every** response including ones
+  written by `http.NotFound` and `http.Error`, which produce their own output
+  and never reach a handler's helper. Per-handler headers left 404s uncovered.
 - **CSRF and DNS-rebinding guards.** Every `/api/*` request is checked against
   `Sec-Fetch-Site` and `Origin`; in the default no-token mode, a request whose
   `Host` is not a loopback authority is rejected, so a rebound public hostname

@@ -793,6 +793,23 @@ func TestAPIResponses_AlwaysCarrySafetyHeaders(t *testing.T) {
 			path:       "/",
 			wantStatus: http.StatusMethodNotAllowed,
 		},
+		{
+			// http.NotFound writes its own response and never reaches the
+			// per-handler helpers, which is why the headers are set by an
+			// outermost wrapper rather than at each call site.
+			name:       "an unknown path 404s",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodGet,
+			path:       "/nope",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "an unknown API path 404s",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodGet,
+			path:       "/api/nope",
+			wantStatus: http.StatusNotFound,
+		},
 	}
 
 	for _, tc := range cases {
