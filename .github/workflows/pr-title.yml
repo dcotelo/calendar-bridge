@@ -37,8 +37,12 @@ jobs:
             revert
           # Scopes are optional, but when present should name a package or area.
           requireScope: false
+          # Two rules, and the message below states exactly these two: the
+          # subject must not START with a capital, and must not END with a
+          # period. Note it does not *require* a lowercase letter — "2 accounts
+          # are required" is fine — so the message must not promise that.
           subjectPattern: ^(?![A-Z])(?!.*\.$).+$
           subjectPatternError: >-
-            The subject "{subject}" is invalid: start it with a lowercase letter
-            and leave off the trailing period, e.g.
+            The subject "{subject}" is invalid: it must not start with a capital
+            letter and must not end with a period, e.g.
             "fix(sync): skip declined invitations".
