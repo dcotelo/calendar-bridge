@@ -225,6 +225,14 @@ func (f *fakeCalendarClient) resetCounts() {
 	f.calls.insert, f.calls.update, f.calls.del = 0, 0, 0
 }
 
+// remove deletes an event directly, bypassing sync logic, for test fixtures.
+// Every other access to f.events takes f.mu; tests must not be the exception.
+func (f *fakeCalendarClient) remove(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.events, id)
+}
+
 // byID returns the event with the given ID, or nil.
 func (f *fakeCalendarClient) byID(id string) *calendar.Event {
 	f.mu.Lock()

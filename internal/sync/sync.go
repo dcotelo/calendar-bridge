@@ -351,12 +351,25 @@ func (e *Engine) ensureBlock(ctx context.Context, src Account, srcEvent *calenda
 		if timesMatch && titleMatches {
 			return outcomeUnchanged, nil
 		}
-		existing.Start = copySpan(srcEvent.Start)
-		existing.End = copySpan(srcEvent.End)
-		existing.Summary = e.BlockTitle
-		if _, err := dst.Client.UpdateEvent(ctx, dst.CalendarID, existing.Id, existing); err != nil {
+		// Build the payload as a COPY rather than mutating the block we hold.
+		// Google's update is a full replace, so it must carry every field —
+		// hence the struct copy — but mutating in place would leave the block
+		// we (and the index) still reference showing the new times even when
+		// the write FAILS: an in-memory state that never reached the API.
+		updated := *existing
+		updated.Start = copySpan(srcEvent.Start)
+		updated.End = copySpan(srcEvent.End)
+		updated.Summary = e.BlockTitle
+		result, err := dst.Client.UpdateEvent(ctx, dst.CalendarID, existing.Id, &updated)
+		if err != nil {
 			return outcomeUnchanged, err
 		}
+		// Only now is the new state real. Point the index at it, so a later
+		// lookup within this same pass sees what the API actually holds.
+		if result == nil {
+			result = &updated
+		}
+		idx[indexKey(src.Name, srcEvent.Id)] = result
 		return outcomeUpdated, nil
 	}
 

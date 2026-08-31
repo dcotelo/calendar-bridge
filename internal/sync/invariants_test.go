@@ -205,6 +205,15 @@ func TestSyncOnce_FallsBackToLookupForABlockOutsideTheWindow(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("work-acme has %d owned blocks, want 1 — the out-of-window block must be moved, not duplicated", len(blocks))
 	}
+	// Pin the MECHANISM, not just the end state: it must be the same block,
+	// moved, and the fallback lookup must actually have run. Without these, a
+	// hypothetical delete-then-insert would satisfy the count and the span.
+	if blocks[0].Id != "stale-block" {
+		t.Errorf("surviving block is %q, want the seeded stale-block moved rather than replaced", blocks[0].Id)
+	}
+	if h.fakes["work-acme"].lookups() == 0 {
+		t.Error("no FindBlockBySource call was made; the out-of-window fallback did not run")
+	}
 	wantStart := baseTime.Add(48 * time.Hour).Format(time.RFC3339)
 	if blocks[0].Start.DateTime != wantStart {
 		t.Errorf("block start = %q, want %q", blocks[0].Start.DateTime, wantStart)
@@ -358,7 +367,13 @@ func renderEvent(ev *calendar.Event) string {
 		sb.WriteString(a.DisplayName)
 	}
 	if ev.ExtendedProperties != nil {
+		// Both maps. Private is where our ownership tags live; Shared is where
+		// a future change could plausibly put something copied from the source,
+		// and this helper is what backs the no-content-propagation claim.
 		for k, v := range ev.ExtendedProperties.Private {
+			sb.WriteString("\x00" + k + "=" + v)
+		}
+		for k, v := range ev.ExtendedProperties.Shared {
 			sb.WriteString("\x00" + k + "=" + v)
 		}
 	}
@@ -812,3 +827,111 @@ func TestSyncOnce_SourceTaggedButUnownedEventIsTreatedAsReal(t *testing.T) {
 		t.Errorf("the impostor was counted as an owned block")
 	}
 }
+
+// ---- write-failure paths ----
+//
+// The fake supports failInsert / failUpdate / failDelete, but nothing exercised
+// them: every other test drives successful writes or pre-write refusals. These
+// cover what happens when a write is accepted for dispatch and then fails.
+
+func TestSyncOnce_WriteFailuresSurfaceAndLeaveStateIntact(t *testing.T) {
+	cases := []struct {
+		name string
+		// arrange seeds the fixture and injects the failure; it returns a
+		// function asserting the destination is unchanged afterwards.
+		arrange func(t *testing.T, h *harness) func(t *testing.T)
+	}{
+		{
+			name: "insert failure",
+			arrange: func(t *testing.T, h *harness) func(*testing.T) {
+				h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+				h.fakes["work-acme"].failInsert = errTestWrite
+				return func(t *testing.T) {
+					if got := len(h.fakes["work-acme"].ownedBlocks()); got != 0 {
+						t.Errorf("work-acme has %d blocks after a failed insert, want 0", got)
+					}
+				}
+			},
+		},
+		{
+			name: "update failure leaves the previous span",
+			arrange: func(t *testing.T, h *harness) func(*testing.T) {
+				h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+				h.run(t) // create the block
+				// Move the source, then make the update fail.
+				src := h.fakes["personal"].byID("evt-1")
+				src.Start.DateTime = baseTime.Add(96 * time.Hour).Format(time.RFC3339)
+				src.End.DateTime = baseTime.Add(97 * time.Hour).Format(time.RFC3339)
+				h.fakes["work-acme"].failUpdate = errTestWrite
+
+				before := h.fakes["work-acme"].ownedBlocks()[0].Start.DateTime
+				return func(t *testing.T) {
+					blocks := h.fakes["work-acme"].ownedBlocks()
+					if len(blocks) != 1 {
+						t.Fatalf("want the block still present, got %d", len(blocks))
+					}
+					if blocks[0].Start.DateTime != before {
+						t.Errorf("block moved to %q despite the update failing; want it left at %q",
+							blocks[0].Start.DateTime, before)
+					}
+				}
+			},
+		},
+		{
+			name: "delete failure leaves the stale block",
+			arrange: func(t *testing.T, h *harness) func(*testing.T) {
+				h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+				h.run(t) // create the block
+				h.fakes["personal"].remove("evt-1")
+				h.fakes["work-acme"].failDelete = errTestWrite
+				return func(t *testing.T) {
+					if got := len(h.fakes["work-acme"].ownedBlocks()); got != 1 {
+						t.Errorf("work-acme has %d blocks after a failed delete, want the stale one kept", got)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, "personal", "work-acme")
+			assertUnchanged := tc.arrange(t, h)
+
+			res, err := h.engine.SyncOnce(context.Background())
+			if err == nil {
+				t.Fatal("SyncOnce returned nil; a failed write must surface")
+			}
+			if !strings.Contains(err.Error(), errTestWrite.Error()) {
+				t.Errorf("error %v does not carry the underlying write failure", err)
+			}
+			// A failed write must not be counted as work done.
+			if res.Created+res.Updated+res.Deleted != 0 {
+				t.Errorf("Result counted a failed write: created=%d updated=%d deleted=%d",
+					res.Created, res.Updated, res.Deleted)
+			}
+			assertUnchanged(t)
+		})
+	}
+}
+
+// One account failing to write must not stop the others. A pass is degraded,
+// not abandoned.
+func TestSyncOnce_WriteFailureOnOneAccountDoesNotStopTheOthers(t *testing.T) {
+	h := newHarness(t, "personal", "work-acme", "work-globex")
+	h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+	h.fakes["work-acme"].failInsert = errTestWrite
+
+	res, err := h.engine.SyncOnce(context.Background())
+	if err == nil {
+		t.Fatal("want the write failure surfaced")
+	}
+	if got := len(h.fakes["work-globex"].ownedBlocks()); got != 1 {
+		t.Errorf("work-globex has %d blocks, want 1 — a failure on one account must not stop another", got)
+	}
+	if res.Created != 1 {
+		t.Errorf("Created = %d, want 1 (globex succeeded, acme failed)", res.Created)
+	}
+}
+
+var errTestWrite = &testError{"simulated write failure"}

@@ -19,9 +19,13 @@ type syncState struct {
 	started     bool
 	lastAttempt time.Time
 	lastSuccess time.Time
-	lastErr     string
-	last        sync.Result
-	pushEnabled bool
+	// lastSuccessDur belongs to the pass lastSuccess names, not to whatever
+	// ran most recently. Reporting last.Duration() alongside lastSuccess would
+	// pair a successful pass's timestamp with a later FAILED pass's duration.
+	lastSuccessDur time.Duration
+	lastErr        string
+	last           sync.Result
+	pushEnabled    bool
 }
 
 func newSyncState(pushEnabled bool) *syncState {
@@ -55,6 +59,7 @@ func (s *syncState) record(res sync.Result, err error) {
 	}
 	s.lastErr = ""
 	s.lastSuccess = s.lastAttempt
+	s.lastSuccessDur = res.Duration()
 }
 
 // status renders the current state for the web UI.
@@ -77,7 +82,7 @@ func (s *syncState) status(accounts int) webui.Status {
 	}
 	if !s.lastSuccess.IsZero() {
 		st.LastSync = s.lastSuccess.UTC().Format(time.RFC3339)
-		st.LastDurationMS = s.last.Duration().Milliseconds()
+		st.LastDurationMS = s.lastSuccessDur.Milliseconds()
 	}
 	// Report per-account health so "which account is broken?" is answerable
 	// from the UI instead of only from the logs.

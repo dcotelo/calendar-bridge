@@ -207,12 +207,18 @@ func (g *googleProvider) UpdateBlock(ctx context.Context, calendarID string, blo
 		reread.SourceEventID != own.SourceEventID {
 		return nil, ErrNotOwned
 	}
-	full.Start = spanToGoogle(start)
-	full.End = spanToGoogle(end)
+	// Mutate a COPY, not the event we just re-read. Google's update is a full
+	// replace so the payload must carry every field — hence the struct copy —
+	// but writing into `full` would leave the caller's in-memory view showing
+	// the new span even when the update FAILS, i.e. a state that never reached
+	// the API.
+	payload := *full
+	payload.Start = spanToGoogle(start)
+	payload.End = spanToGoogle(end)
 	if title != "" {
-		full.Summary = title
+		payload.Summary = title
 	}
-	updated, err := g.client.UpdateEvent(ctx, calendarID, full.Id, full)
+	updated, err := g.client.UpdateEvent(ctx, calendarID, full.Id, &payload)
 	if err != nil {
 		return nil, err
 	}

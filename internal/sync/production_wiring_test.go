@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func TestProductionWiring_PropagatesAndCollects(t *testing.T) {
 	}
 
 	// Source removed => block collected, through the provider's checked delete.
-	delete(h.fakes["personal"].events, "evt-1")
+	h.fakes["personal"].remove("evt-1")
 	res = h.run(t)
 	if res.Deleted != 1 {
 		t.Errorf("Deleted = %d, want 1", res.Deleted)
@@ -196,17 +197,78 @@ func TestProductionWiring_NeutralModelCarriesNoEventContent(t *testing.T) {
 	}
 	rendered := renderEvent(blocks[0])
 	for _, needle := range []string{"Oncology", "results", "Elsewhere", "dr@example.test"} {
-		if contains(rendered, needle) {
+		if strings.Contains(rendered, needle) {
 			t.Errorf("block leaks %q across the account boundary", needle)
 		}
 	}
 }
 
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
+// A write that fails after passing every ownership check must surface, and must
+// leave nothing partial or untagged behind. Exercised through the production
+// stack, where the failure has to travel back up through the provider bridge
+// and the retry layer.
+func TestProductionWiring_WriteFailuresSurfaceAndLeaveNoPartialBlock(t *testing.T) {
+	t.Run("insert failure leaves no block", func(t *testing.T) {
+		f := newFakeCalendarClient()
+		f.failInsert = errTestWrite
+		src := newFakeCalendarClient()
+		src.seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+
+		eng := &Engine{
+			Accounts: []Account{
+				{Name: "personal", CalendarID: "primary", Client: productionStack(src, "Busy (calendar-bridge)")},
+				{Name: "work-acme", CalendarID: "primary", Client: productionStack(f, "Busy (calendar-bridge)")},
+			},
+			BlockTitle: "Busy (calendar-bridge)", LookaheadDays: 30,
+			Logger: newTestLogger(), Now: fixedClock(baseTime),
 		}
-	}
-	return false
+
+		res, err := eng.SyncOnce(context.Background())
+		if err == nil {
+			t.Fatal("a failed insert must surface")
+		}
+		if res.Created != 0 {
+			t.Errorf("Created = %d, want 0", res.Created)
+		}
+		if got := len(f.ownedBlocks()); got != 0 {
+			t.Errorf("work-acme holds %d blocks after a failed insert, want 0", got)
+		}
+		// Nothing untagged may be left behind either.
+		for _, ev := range f.events {
+			if !isOwnedBlock(ev) {
+				t.Errorf("a non-owned event was created on the destination: %+v", ev)
+			}
+		}
+	})
+
+	t.Run("update failure leaves the block at its previous span", func(t *testing.T) {
+		h := productionHarness(t, "personal", "work-acme")
+		h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+		h.run(t)
+
+		before := h.fakes["work-acme"].ownedBlocks()[0].Start.DateTime
+		src := h.fakes["personal"].byID("evt-1")
+		src.Start.DateTime = baseTime.Add(96 * time.Hour).Format(time.RFC3339)
+		src.End.DateTime = baseTime.Add(97 * time.Hour).Format(time.RFC3339)
+		h.fakes["work-acme"].failUpdate = errTestWrite
+
+		res, err := h.engine.SyncOnce(context.Background())
+		if err == nil {
+			t.Fatal("a failed update must surface")
+		}
+		if res.Updated != 0 {
+			t.Errorf("Updated = %d, want 0", res.Updated)
+		}
+		blocks := h.fakes["work-acme"].ownedBlocks()
+		if len(blocks) != 1 {
+			t.Fatalf("want the block still present, got %d", len(blocks))
+		}
+		if blocks[0].Start.DateTime != before {
+			t.Errorf("block shows %q after a FAILED update; want %q — the in-memory state must not "+
+				"advance past what the API actually accepted", blocks[0].Start.DateTime, before)
+		}
+		if !isOwnedBlock(blocks[0]) {
+			t.Error("the block lost its ownership tag through a failed update")
+		}
+	})
 }
