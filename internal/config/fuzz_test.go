@@ -2,7 +2,6 @@ package config
 
 import (
 	"net"
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -35,24 +34,36 @@ lookahead_days: 30
 	f.Add("!!binary |\n  aGVsbG8=\n")
 	f.Add("a: &x [*x]\n") // self-referential anchor
 
-	dir := f.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-
-	// The fuzzer always writes the file before calling Load, so it never
-	// exercises a missing path. Pin that case deterministically here: a failed
-	// Load must return a nil config, so a caller that ignored the error can't
-	// silently run against zero accounts.
-	if cfg, err := Load(filepath.Join(dir, "definitely-absent.yaml")); err == nil {
+	// Load's own file handling is checked once, deterministically, rather than
+	// per iteration: a failed Load must return a nil config, so a caller that
+	// ignored the error cannot silently run against zero accounts.
+	if cfg, err := Load(filepath.Join(f.TempDir(), "definitely-absent.yaml")); err == nil {
 		f.Fatal("Load accepted a missing config file")
 	} else if cfg != nil {
 		f.Fatalf("Load returned a config (%+v) alongside an error; it must be nil", cfg)
 	}
 
+	// The body fuzzes loadBytes, not Load. Writing a file and reading it back
+	// on every execution made this target do two syscalls per exec, which
+	// collapsed throughput to 0 exec/sec and failed the CI fuzz job with
+	// "context deadline exceeded" — a flaky gate rather than a found bug. The
+	// parser is what this target is actually about; os.ReadFile is covered by
+	// the tests above.
 	f.Fuzz(func(t *testing.T, contents string) {
-		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		// Bounded on purpose. yaml.Unmarshal is super-quadratic in the number
+		// of duplicate keys, so the fuzzer will happily generate a few
+		// thousand repeated keys and spend seconds inside ONE execution —
+		// which stalls the coordinator's shutdown and fails the job with
+		// "context deadline exceeded" rather than a finding. Reproduced both
+		// locally and in CI before adding this.
+		//
+		// The bound tests the parser's correctness, which is this target's
+		// job, instead of yaml.v3's asymptotics. Production rejects anything
+		// over maxConfigBytes outright.
+		if len(contents) > 4096 {
 			t.Skip()
 		}
-		cfg, err := Load(path)
+		cfg, err := loadBytes([]byte(contents))
 		if err != nil {
 			if cfg != nil {
 				t.Fatalf("Load returned both a config and an error (%v)", err)

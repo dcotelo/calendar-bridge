@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeTempConfig(t *testing.T, content string) string {
@@ -317,5 +318,46 @@ func TestLoad_WebhookChannelTTLValidation(t *testing.T) {
 				t.Errorf("Load() error = %v, want nil for channel_ttl %q", err, tc.ttl)
 			}
 		})
+	}
+}
+
+// A pathological config must fail fast rather than appear to hang.
+//
+// yaml.Unmarshal is super-quadratic in the number of DUPLICATE keys: on this
+// struct, 500 repeated keys parse in ~23ms, 1000 in ~93ms, 2000 in ~447ms,
+// 4000 in ~2.9s, and 20000 does not finish in any useful time. A daemon that
+// wedges at startup parsing its own config is a much worse failure mode than
+// one that exits with a message, because it looks like a network problem.
+//
+// This surfaced as a 1-in-6 CI failure in the fuzz job — "context deadline
+// exceeded" with no failing input — because the fuzzer generates exactly this
+// shape.
+func TestLoad_RejectsAnOversizedConfigWithoutParsingIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	// Comfortably over the cap, in the shape that is expensive to parse.
+	if err := os.WriteFile(path, []byte(strings.Repeat("k: v\n", 300000)), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	start := time.Now()
+	cfg, err := Load(path)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Load accepted a config file over the size limit")
+	}
+	if cfg != nil {
+		t.Errorf("Load returned a config (%+v) alongside an error; it must be nil", cfg)
+	}
+	// The point is that it rejects on SIZE, before handing the bytes to the
+	// parser. Parsing this input takes minutes, so anything near that means
+	// the check moved after the parse.
+	if elapsed > 2*time.Second {
+		t.Errorf("Load took %v; the size check must run before parsing", elapsed)
+	}
+	// And the error must stay path-free like every other Load error.
+	if strings.Contains(err.Error(), dir) {
+		t.Errorf("error discloses the config directory: %v", err)
 	}
 }

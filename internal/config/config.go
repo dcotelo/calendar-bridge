@@ -159,6 +159,17 @@ type WebUI struct {
 }
 
 // Load reads and parses a YAML config file at path.
+// maxConfigBytes bounds a config file. Nothing legitimate comes close — the
+// example config is under 2 KiB — and the cap turns a pathological file into a
+// clear error rather than an apparent hang.
+//
+// yaml.Unmarshal is super-quadratic in the number of DUPLICATE keys: measured
+// on this struct, 500 repeated keys parse in 23ms, 1000 in 93ms, 2000 in
+// 447ms, 4000 in 2.9s, and 20000 does not finish in any useful time. Without a
+// cap, a truncated or corrupted config could wedge the daemon at startup in a
+// way that looks like a hang rather than a failure.
+const maxConfigBytes = 1 << 20 // 1 MiB
+
 func Load(path string) (*Config, error) {
 	// #nosec G304 -- path is an explicit CLI flag the operator passes to
 	// their own calendar-bridge invocation, not untrusted external input.
@@ -171,7 +182,21 @@ func Load(path string) (*Config, error) {
 		// format string, so its cause is stripped too.
 		return nil, fmt.Errorf("reading config file: %w", pathFree(err))
 	}
+	if len(data) > maxConfigBytes {
+		return nil, fmt.Errorf("config file is %d bytes, over the %d-byte limit; this is not a calendar-bridge config", len(data), maxConfigBytes)
+	}
+	return loadBytes(data)
+}
 
+// loadBytes parses, validates and applies defaults to raw config bytes. It is
+// separate from Load so the parser can be fuzzed without a filesystem round
+// trip per iteration: FuzzLoad previously wrote a file and read it back on
+// every execution, which collapsed throughput to zero exec/sec and made the
+// fuzz job miss its deadline on a shared runner. File reading is covered by
+// ordinary tests; robustness of the parse belongs here.
+//
+// It returns a nil *Config with every error, which the fuzz target asserts.
+func loadBytes(data []byte) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config file: %w", err)
