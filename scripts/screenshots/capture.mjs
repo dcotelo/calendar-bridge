@@ -150,8 +150,11 @@ async function captureScheme(browser, scheme) {
 }
 
 const browser = await chromium.launch();
-await mkdir(OUT, { recursive: true });
 try {
+  // Inside the try, not before it: a rejected mkdir — a read-only parent, a
+  // permissions problem — would otherwise skip the finally and leave the
+  // Chromium process running, so the script appears to hang rather than fail.
+  await mkdir(OUT, { recursive: true });
   for (const scheme of ["dark", "light"]) {
     await captureScheme(browser, scheme);
   }
