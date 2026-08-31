@@ -205,6 +205,7 @@ func TestTokenFromFile_DistinguishesMissingFromCorrupt(t *testing.T) {
 		}
 	})
 
+	// #nosec G101 -- fabricated malformed fixtures, none of them credentials.
 	cases := map[string]string{
 		"truncated json":    `{"access_token":"abc`,
 		"not json at all":   `this is not json`,
@@ -230,6 +231,8 @@ func TestTokenFromFile_DistinguishesMissingFromCorrupt(t *testing.T) {
 // would put an access token into logs.
 func TestTokenFromFile_ErrorDoesNotQuoteFileContents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token.json")
+	// #nosec G101 -- fabricated. The test asserts this string never reaches an
+	// error message, which is exactly why it has to look like a token.
 	const secret = "ya29.SUPER-SECRET-ACCESS-TOKEN"
 	if err := os.WriteFile(path, []byte(`{"access_token":"`+secret), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)

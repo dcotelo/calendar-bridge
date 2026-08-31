@@ -15,6 +15,7 @@ func TestWrite_CreatesFileWithContentsAndPerms(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
+	// #nosec G304 -- path is built from t.TempDir() inside this test.
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -43,6 +44,8 @@ func TestWrite_TightensPermissionsOnExistingFile(t *testing.T) {
 
 	// A file left world-readable by an older version or a manual edit must not
 	// survive a rewrite with its loose permissions intact.
+	// #nosec G306 -- deliberately permissive: this IS the stale state the test
+	// exists to exercise, not the behaviour of the code under test.
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -101,6 +104,7 @@ func TestWrite_ReplacesContentsCompletely(t *testing.T) {
 		t.Fatalf("second Write: %v", err)
 	}
 
+	// #nosec G304 -- path is built from t.TempDir() inside this test.
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)

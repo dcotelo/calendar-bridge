@@ -163,7 +163,7 @@ func Authorize(ctx context.Context, credentialsFile, tokenFile string) error {
 		return fmt.Errorf("exchanging authorization code: %w", err)
 	}
 	if tok.RefreshToken == "" {
-		return fmt.Errorf("Google returned no refresh token; without one this account would stop working within the hour. " +
+		return errors.New("no refresh token was returned; without one this account would stop working within the hour. " +
 			"Revoke calendar-bridge's access at https://myaccount.google.com/permissions and run `auth` again")
 	}
 
