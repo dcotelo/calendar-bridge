@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -160,16 +161,36 @@ type WebUI struct {
 }
 
 // Load reads and parses a YAML config file at path.
-// maxConfigBytes bounds a config file. Nothing legitimate comes close — the
-// example config is under 2 KiB — and the cap turns a pathological file into a
-// clear error rather than an apparent hang.
+// maxConfigBytes bounds how much of a config file is read into MEMORY, so a
+// runaway or wrong file cannot exhaust the heap before it is rejected. Nothing
+// legitimate comes close: the example config is under 2 KiB.
 //
-// yaml.Unmarshal is super-quadratic in the number of DUPLICATE keys: measured
-// on this struct, 500 repeated keys parse in 23ms, 1000 in 93ms, 2000 in
-// 447ms, 4000 in 2.9s, and 20000 does not finish in any useful time. Without a
-// cap, a truncated or corrupted config could wedge the daemon at startup in a
-// way that looks like a hang rather than a failure.
+// It does NOT bound parse time — see maxConfigKeys, which does. The two limits
+// address different failure modes and neither substitutes for the other.
 const maxConfigBytes = 1 << 20 // 1 MiB
+
+// maxConfigKeys bounds how many `key:` candidates a config may contain, counted
+// as ':' characters before parsing.
+//
+// The byte cap alone does NOT bound parse time. yaml.Unmarshal is
+// super-quadratic in the number of duplicate keys in one mapping, and the
+// pathological input is small: 20000 repeated keys is about 97 KiB, comfortably
+// under the 1 MiB cap, and does not finish in any useful time. Measured on this
+// struct:
+//
+//	 250 keys     5ms
+//	 500 keys    21ms
+//	1000 keys    99ms
+//	2000 keys   364ms
+//	3000 keys   764ms
+//
+// A line count would not work either: flow style (`{k: v, k: v, …}`) puts any
+// number of keys on one line. Counting ':' catches both shapes and is O(n).
+//
+// 2000 is ~20x headroom over a legitimate config — a real account block has
+// about ten, so eight accounts plus the global settings is roughly a hundred —
+// while holding worst-case parse time to a few hundred milliseconds.
+const maxConfigKeys = 2000
 
 func Load(path string) (*Config, error) {
 	// #nosec G304 -- path is an explicit CLI flag the operator passes to
@@ -208,6 +229,12 @@ func Load(path string) (*Config, error) {
 //
 // It returns a nil *Config with every error, which the fuzz target asserts.
 func loadBytes(data []byte) (*Config, error) {
+	// Bound the parse before entering it. See maxConfigKeys: the byte cap
+	// bounds memory, this bounds time, and neither substitutes for the other.
+	if n := bytes.Count(data, []byte{':'}); n > maxConfigKeys {
+		return nil, fmt.Errorf("config file has %d keys, over the %d-key limit; this is not a calendar-bridge config", n, maxConfigKeys)
+	}
+
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config file: %w", err)

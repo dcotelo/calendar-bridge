@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -392,4 +393,72 @@ func TestLoad_DoesNotAllocateAnOversizedFile(t *testing.T) {
 	if allocated > 8<<20 {
 		t.Errorf("Load allocated %d MiB for a %d MiB file; the read is not bounded", allocated>>20, size>>20)
 	}
+}
+
+// The byte cap bounds MEMORY; it does not bound parse TIME. The pathological
+// input is small: 20000 duplicate keys is ~97 KiB, well under the 1 MiB cap,
+// and yaml.Unmarshal does not finish on it in any useful time. A line count
+// would not help either — flow style puts any number of keys on one line.
+//
+// So both shapes must be rejected before the parser sees them, and a generous
+// real config must still load.
+func TestLoad_RejectsTooManyKeysBeforeParsing(t *testing.T) {
+	dir := t.TempDir()
+
+	for name, body := range map[string]string{
+		"block style":                 strings.Repeat("k: v\n", 20000),
+		"flow style on a single line": "{" + strings.Repeat("k: v,", 20000) + "k: v}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, "c.yaml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			if len(body) > maxConfigBytes {
+				t.Fatalf("precondition: this input (%d bytes) must be UNDER the byte cap, "+
+					"or it would not exercise the key bound", len(body))
+			}
+
+			start := time.Now()
+			cfg, err := Load(path)
+			elapsed := time.Since(start)
+
+			if err == nil {
+				t.Fatal("Load accepted an input with far too many keys")
+			}
+			if cfg != nil {
+				t.Error("Load returned a config alongside the error")
+			}
+			// Parsing this takes minutes, so anything slow means the check
+			// moved after the parse.
+			if elapsed > time.Second {
+				t.Errorf("Load took %v; the key bound must run before parsing", elapsed)
+			}
+		})
+	}
+
+	// Headroom check: the bound must not reject a real deployment.
+	t.Run("a 60-account config still loads", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString("accounts:\n")
+		for i := 0; i < 60; i++ {
+			b.WriteString("  - name: acct-" + strconv.Itoa(i) + "\n" +
+				"    credentials_file: /s/c" + strconv.Itoa(i) + ".json\n" +
+				"    token_file: /s/t" + strconv.Itoa(i) + ".json\n" +
+				"    calendar_id: primary\n")
+		}
+		b.WriteString("poll_interval: 5m\nlookahead_days: 30\n")
+
+		path := filepath.Join(dir, "big.yaml")
+		if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("a 60-account config was rejected: %v", err)
+		}
+		if len(cfg.Accounts) != 60 {
+			t.Errorf("loaded %d accounts, want 60", len(cfg.Accounts))
+		}
+	})
 }
