@@ -37,6 +37,13 @@ type fakeCalendarClient struct {
 	failUpdate error
 	failDelete error
 	failGet    error
+
+	// etagRaceOnUpdate, when non-empty, rewrites every owned block's ETag at
+	// the START of the next UpdateEvent — modelling a concurrent writer that
+	// touched the event AFTER the caller listed it and BEFORE the conditional
+	// write lands. Changing the ETag any earlier would simply be listed by the
+	// caller and would model nothing.
+	etagRaceOnUpdate string
 }
 
 func newFakeCalendarClient() *fakeCalendarClient {
@@ -155,10 +162,34 @@ func (f *fakeCalendarClient) UpdateEvent(ctx context.Context, calendarID, eventI
 	if f.failUpdate != nil {
 		return nil, f.failUpdate
 	}
-	if _, ok := f.events[eventID]; !ok {
+	if f.etagRaceOnUpdate != "" {
+		for _, ev := range f.events {
+			if isOwnedBlock(ev) {
+				ev.Etag = f.etagRaceOnUpdate
+			}
+		}
+		f.etagRaceOnUpdate = "" // one-shot; a retry sees the settled state
+	}
+	existing, ok := f.events[eventID]
+	if !ok {
 		return nil, fmt.Errorf("fake: event %s not found", eventID)
 	}
+	// Model the real API's conditional update, exactly as DeleteEvent models
+	// the conditional delete: an If-Match that no longer matches fails its
+	// precondition (412) instead of overwriting. Without this the engine's
+	// conditional update and googleProvider's 412 re-read loop are both
+	// unreachable through this fake, so neither can be tested. A blank ETag on
+	// either side means the caller isn't modelling ETags and is treated as a
+	// match.
+	if ifMatchETag != "" && existing.Etag != "" && ifMatchETag != existing.Etag {
+		return nil, &googleapi.Error{Code: http.StatusPreconditionFailed}
+	}
 	ev.Id = eventID
+	// Carry the stored ETag forward when the caller's payload has none, so an
+	// update cannot silently strip it and break every later conditional op.
+	if ev.Etag == "" {
+		ev.Etag = existing.Etag
+	}
 	f.events[eventID] = ev
 	return ev, nil
 }

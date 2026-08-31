@@ -2,11 +2,14 @@ package sync
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // This file covers the sync invariants that had no direct test: no sync loops,
@@ -935,3 +938,96 @@ func TestSyncOnce_WriteFailureOnOneAccountDoesNotStopTheOthers(t *testing.T) {
 }
 
 var errTestWrite = &testError{"simulated write failure"}
+
+// ---- lookup and precondition failures ----
+
+// When the in-memory index misses, ensureBlock falls back to a lookup. If that
+// lookup FAILS, the engine must surface the error and must NOT insert — an
+// insert on an unknown state is how duplicate blocks appear.
+func TestSyncOnce_FallbackLookupFailures(t *testing.T) {
+	// A block for personal/evt-1 far outside the fetch window, so the index
+	// cannot cover it and the fallback is forced.
+	seedOutOfWindow := func(h *harness) {
+		far := baseTime.Add(60 * 24 * time.Hour)
+		h.fakes["work-acme"].seed("stale-block", &calendar.Event{
+			Summary: "Busy (calendar-bridge)",
+			Start:   &calendar.EventDateTime{DateTime: far.Format(time.RFC3339), TimeZone: "UTC"},
+			End:     &calendar.EventDateTime{DateTime: far.Add(time.Hour).Format(time.RFC3339), TimeZone: "UTC"},
+			ExtendedProperties: &calendar.EventExtendedProperties{Private: map[string]string{
+				ownerKey:          ownerValue,
+				sourceAccountKey:  "personal",
+				sourceCalendarKey: "primary",
+				sourceEventKey:    "evt-1",
+			}},
+		})
+		h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+	}
+
+	cases := []struct {
+		name   string
+		inject func(f *fakeCalendarClient)
+	}{
+		{"FindBlockBySource fails", func(f *fakeCalendarClient) { f.failFind = errTestLookup }},
+		{"GetEvent fails", func(f *fakeCalendarClient) { f.failGet = errTestLookup }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, "personal", "work-acme")
+			seedOutOfWindow(h)
+			tc.inject(h.fakes["work-acme"])
+
+			res, err := h.engine.SyncOnce(context.Background())
+
+			// GetEvent is not on the engine's direct path, so only the Find
+			// case is expected to fail the pass. Either way the invariant that
+			// matters is the same: no duplicate block.
+			if tc.name == "FindBlockBySource fails" {
+				if err == nil {
+					t.Fatal("a failed fallback lookup must surface")
+				}
+				if !strings.Contains(err.Error(), errTestLookup.Error()) {
+					t.Errorf("error %v does not carry the lookup failure", err)
+				}
+				if res.Created != 0 {
+					t.Errorf("Created = %d, want 0 — never insert on an unknown state", res.Created)
+				}
+			}
+			if got := len(h.fakes["work-acme"].ownedBlocks()); got != 1 {
+				t.Errorf("work-acme has %d owned blocks, want the single seeded one — a failed "+
+					"lookup must never produce a duplicate", got)
+			}
+		})
+	}
+}
+
+// The engine's update is conditional on the ETag it listed. If the block
+// changed after the fetch, the update must fail its precondition rather than
+// overwrite an event that may no longer be ours.
+func TestSyncOnce_UpdateIsConditionalOnTheListedETag(t *testing.T) {
+	h := newHarness(t, "personal", "work-acme")
+	h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+	h.run(t)
+
+	// Give the block an ETag, then move the source so an update is required.
+	blk := h.fakes["work-acme"].ownedBlocks()[0]
+	blk.Etag = `"etag-current"`
+	src := h.fakes["personal"].byID("evt-1")
+	src.Start.DateTime = baseTime.Add(96 * time.Hour).Format(time.RFC3339)
+	src.End.DateTime = baseTime.Add(97 * time.Hour).Format(time.RFC3339)
+
+	// A concurrent writer touches the block between the list and the update, so
+	// the ETag the engine listed is already stale when the write lands.
+	h.fakes["work-acme"].etagRaceOnUpdate = `"etag-changed"`
+
+	_, err := h.engine.SyncOnce(context.Background())
+	if err == nil {
+		t.Fatal("the update should have failed its ETag precondition")
+	}
+	var apiErr *googleapi.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("error = %v, want a 412 precondition failure", err)
+	}
+}
+
+var errTestLookup = &testError{"simulated lookup failure"}

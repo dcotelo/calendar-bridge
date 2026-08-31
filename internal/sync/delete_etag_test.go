@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,6 +178,7 @@ type updateETagClient struct {
 	afterConflict *calendar.Event
 	updates       int
 	failFirst412  bool
+	always412     bool // the event keeps changing: every update 412s
 	lastIfMatch   []string
 	conflicted    bool
 }
@@ -199,7 +201,7 @@ func (u *updateETagClient) InsertEvent(_ context.Context, _ string, ev *calendar
 func (u *updateETagClient) UpdateEvent(_ context.Context, _, _ string, ev *calendar.Event, ifMatch string) (*calendar.Event, error) {
 	u.updates++
 	u.lastIfMatch = append(u.lastIfMatch, ifMatch)
-	if u.failFirst412 && u.updates == 1 {
+	if u.always412 || (u.failFirst412 && u.updates == 1) {
 		u.conflicted = true
 		return nil, &googleapi.Error{Code: 412}
 	}
@@ -217,54 +219,98 @@ func updateSpans() (TimeSpan, TimeSpan) {
 	return TimeSpan{DateTime: "2026-03-12T10:00:00Z"}, TimeSpan{DateTime: "2026-03-12T11:00:00Z"}
 }
 
-func TestUpdateBlock_UsesETagIfMatch(t *testing.T) {
-	c := &updateETagClient{ev: ownedEvent("blk-1", `"etag-1"`)}
-	start, end := updateSpans()
-
-	if _, err := NewGoogleProvider(c).UpdateBlock(context.Background(), "primary", ownedNeutral(), "Busy", start, end); err != nil {
-		t.Fatalf("UpdateBlock: %v", err)
-	}
-	if len(c.lastIfMatch) != 1 || c.lastIfMatch[0] != `"etag-1"` {
-		t.Errorf("If-Match on update = %v, want the ETag from the re-read; without it the ownership "+
-			"check and the write are not atomic", c.lastIfMatch)
-	}
-}
-
-// A 412 means the event changed after the read: re-read, re-verify, retry once.
-func TestUpdateBlock_On412ReReadsAndUsesTheNewETag(t *testing.T) {
-	c := &updateETagClient{
-		ev:            ownedEvent("blk-1", `"etag-old"`),
-		afterConflict: ownedEvent("blk-1", `"etag-new"`),
-		failFirst412:  true,
-	}
-	start, end := updateSpans()
-
-	if _, err := NewGoogleProvider(c).UpdateBlock(context.Background(), "primary", ownedNeutral(), "Busy", start, end); err != nil {
-		t.Fatalf("UpdateBlock after a 412: %v", err)
-	}
-	if len(c.lastIfMatch) != 2 || c.lastIfMatch[1] != `"etag-new"` {
-		t.Errorf("If-Match sequence = %v, want the retry to use the freshly re-read etag-new", c.lastIfMatch)
-	}
-}
-
-// The case that matters: the event lost its owner tag between the read and the
-// write. The retry must REFUSE it rather than overwrite a real user event.
-func TestUpdateBlock_On412BecomesUntaggedRefuses(t *testing.T) {
+func TestUpdateBlock_ETagPreconditions(t *testing.T) {
 	untagged := ownedEvent("blk-1", `"etag-new"`)
 	delete(untagged.ExtendedProperties.Private, ownerKey)
 
-	c := &updateETagClient{
-		ev:            ownedEvent("blk-1", `"etag-old"`),
-		afterConflict: untagged,
-		failFirst412:  true,
+	cases := []struct {
+		name   string
+		client *updateETagClient
+		// wantErr is checked with errors.Is when non-nil; want412 expects a
+		// bounded-retry failure instead.
+		wantErr     error
+		want412Msg  bool
+		wantUpdates int
+		wantIfMatch []string
+	}{
+		{
+			name:        "conditional on the re-read ETag",
+			client:      &updateETagClient{ev: ownedEvent("blk-1", `"etag-1"`)},
+			wantUpdates: 1,
+			wantIfMatch: []string{`"etag-1"`},
+		},
+		{
+			name: "412 re-reads and retries with the fresh ETag",
+			client: &updateETagClient{
+				ev:            ownedEvent("blk-1", `"etag-old"`),
+				afterConflict: ownedEvent("blk-1", `"etag-new"`),
+				failFirst412:  true,
+			},
+			wantUpdates: 2,
+			wantIfMatch: []string{`"etag-old"`, `"etag-new"`},
+		},
+		{
+			// The one that matters: the owner tag disappeared in the window.
+			name: "412 then untagged is refused before writing",
+			client: &updateETagClient{
+				ev:            ownedEvent("blk-1", `"etag-old"`),
+				afterConflict: untagged,
+				failFirst412:  true,
+			},
+			wantErr:     ErrNotOwned,
+			wantUpdates: 1,
+		},
+		{
+			// Bounded, not infinite: an event changing on every attempt must
+			// stop rather than retry forever.
+			name: "persistent 412 gives up after the bounded retries",
+			client: &updateETagClient{
+				ev:            ownedEvent("blk-1", `"etag-old"`),
+				afterConflict: ownedEvent("blk-1", `"etag-newer"`),
+				always412:     true,
+			},
+			want412Msg:  true,
+			wantUpdates: 2,
+		},
 	}
-	start, end := updateSpans()
 
-	_, err := NewGoogleProvider(c).UpdateBlock(context.Background(), "primary", ownedNeutral(), "Busy", start, end)
-	if !errors.Is(err, ErrNotOwned) {
-		t.Fatalf("UpdateBlock = %v, want ErrNotOwned — an event that lost its owner tag must never be overwritten", err)
-	}
-	if c.updates != 1 {
-		t.Errorf("made %d update calls; the retry must be refused BEFORE writing", c.updates)
+	start, end := updateSpans()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewGoogleProvider(tc.client).
+				UpdateBlock(context.Background(), "primary", ownedNeutral(), "Busy", start, end)
+
+			switch {
+			case tc.wantErr != nil:
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err = %v, want %v", err, tc.wantErr)
+				}
+			case tc.want412Msg:
+				if err == nil {
+					t.Fatal("a persistently conflicting update must fail, not loop forever")
+				}
+				if !strings.Contains(err.Error(), "precondition") {
+					t.Errorf("err = %v, want it to name the ownership precondition", err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("UpdateBlock: %v", err)
+				}
+			}
+
+			if tc.client.updates != tc.wantUpdates {
+				t.Errorf("made %d update calls, want %d", tc.client.updates, tc.wantUpdates)
+			}
+			if tc.wantIfMatch != nil {
+				if len(tc.client.lastIfMatch) != len(tc.wantIfMatch) {
+					t.Fatalf("If-Match sequence = %v, want %v", tc.client.lastIfMatch, tc.wantIfMatch)
+				}
+				for i, want := range tc.wantIfMatch {
+					if tc.client.lastIfMatch[i] != want {
+						t.Errorf("If-Match[%d] = %q, want %q", i, tc.client.lastIfMatch[i], want)
+					}
+				}
+			}
+		})
 	}
 }

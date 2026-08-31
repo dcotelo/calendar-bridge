@@ -225,9 +225,11 @@ func (g *googleProvider) UpdateBlock(ctx context.Context, calendarID string, blo
 		payload := *full
 		payload.Start = spanToGoogle(start)
 		payload.End = spanToGoogle(end)
-		if title != "" {
-			payload.Summary = title
-		}
+		// Assigned unconditionally. Preserving the old summary when title is ""
+		// would make the engine see title drift on every pass and rewrite the
+		// same block forever — the caller decides the title, including an empty
+		// one.
+		payload.Summary = title
 
 		updated, err := g.client.UpdateEvent(ctx, calendarID, full.Id, &payload, full.Etag)
 		if err == nil {
