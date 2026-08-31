@@ -595,11 +595,287 @@ func TestIndex_ServedWithSecurityHeaders(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("index status = %d, want 200", w.Code)
 	}
-	wantCSP := "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'"
-	if got := w.Header().Get("Content-Security-Policy"); got != wantCSP {
-		t.Errorf("Content-Security-Policy = %q, want %q", got, wantCSP)
+
+	csp := w.Header().Get("Content-Security-Policy")
+	// Asserted directive by directive rather than as one exact string, so
+	// adding a directive doesn't fail the test but weakening one does.
+	for _, want := range []string{
+		"default-src 'none'",
+		"connect-src 'self'",
+		"base-uri 'none'",
+		"frame-ancestors 'none'",
+		"form-action 'none'",
+	} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP is missing %q; got %q", want, csp)
+		}
 	}
-	if w.Header().Get("X-Content-Type-Options") != "nosniff" {
-		t.Error("index missing X-Content-Type-Options: nosniff")
+	// 'unsafe-inline' would defeat the point of the nonce.
+	if strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "unsafe-eval") {
+		t.Errorf("CSP contains an unsafe- directive: %q", csp)
+	}
+
+	for _, tc := range []struct{ header, want string }{
+		{"X-Content-Type-Options", "nosniff"},
+		{"X-Frame-Options", "DENY"},
+		{"Referrer-Policy", "no-referrer"},
+		{"Cache-Control", "no-store"},
+	} {
+		if got := w.Header().Get(tc.header); got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.header, got, tc.want)
+		}
+	}
+}
+
+// The nonce in the header must match the one in the served body, and must
+// differ on every response — a fixed nonce is no better than 'unsafe-inline'.
+func TestIndex_CSPNonceMatchesTheBodyAndRotates(t *testing.T) {
+	srv := newTestServer(t, "")
+
+	fetch := func() (nonce, body string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req(t, http.MethodGet, "/", "", ""))
+		csp := w.Header().Get("Content-Security-Policy")
+		const marker = "script-src 'nonce-"
+		i := strings.Index(csp, marker)
+		if i < 0 {
+			t.Fatalf("CSP has no script-src nonce: %q", csp)
+		}
+		rest := csp[i+len(marker):]
+		j := strings.Index(rest, "'")
+		if j < 0 {
+			t.Fatalf("unterminated nonce in CSP: %q", csp)
+		}
+		return rest[:j], w.Body.String()
+	}
+
+	n1, body1 := fetch()
+	if n1 == "" {
+		t.Fatal("empty CSP nonce")
+	}
+	if strings.Contains(body1, "__CSP_NONCE__") {
+		t.Error("the served page still contains the nonce placeholder; its style and script would be blocked")
+	}
+	if got := strings.Count(body1, `nonce="`+n1+`"`); got != 2 {
+		t.Errorf("body carries the header's nonce %d times, want 2 (the inline style and the inline script)", got)
+	}
+
+	n2, _ := fetch()
+	if n1 == n2 {
+		t.Error("the CSP nonce is identical across responses; it must be per-response to be worth anything")
+	}
+}
+
+// The config path must not reach the browser, matching how the CLI keeps it out
+// of logs.
+func TestGetConfig_ErrorDoesNotLeakTheConfigPath(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "definitely-not-here", "config.yaml")
+	srv, err := New(Options{ConfigPath: missing, ListenAddr: "127.0.0.1:0", Logger: testLogger()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req(t, http.MethodGet, "/api/config", "", ""))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if strings.Contains(w.Body.String(), dir) {
+		t.Errorf("the response leaks the config path: %s", w.Body.String())
+	}
+}
+
+// validConfigJSON is a well-formed PUT body: the request must be rejected for
+// the reason under test (cross-site, bad Origin), not for its contents.
+const validConfigJSON = `{"accounts":[
+  {"name":"personal","credentials_file":"a.json","token_file":"a-tok.json","calendar_id":"primary"},
+  {"name":"work","credentials_file":"b.json","token_file":"b-tok.json","calendar_id":"work-cal"}
+],"poll_interval":"10m","lookahead_days":60,"block_title":"DND","web_ui":{"auth_token":""}}`
+
+// Every response this server produces — success or rejection — must carry
+// no-store and nosniff. Error paths matter MORE than success paths here: an
+// intermediary that cached a 401 or a 403 would keep answering with it after
+// the operator fixed the token or the origin, and the rejections fire in
+// middleware, before any handler that would otherwise set the headers.
+//
+// http.Error sets nosniff on its own but never Cache-Control, which is why the
+// rejections go through plainError instead.
+func TestAPIResponses_AlwaysCarrySafetyHeaders(t *testing.T) {
+	cases := []struct {
+		name       string
+		server     func(t *testing.T) *Server
+		method     string
+		path       string
+		token      string
+		body       string
+		mutate     func(r *http.Request)
+		wantStatus int
+	}{
+		{
+			name:       "GET /api/config succeeds",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodGet,
+			path:       "/api/config",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "GET /api/status succeeds",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodGet,
+			path:       "/api/status",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "a config that cannot be loaded",
+			server: func(t *testing.T) *Server {
+				missing := filepath.Join(t.TempDir(), "absent", "config.yaml")
+				return newTestServer(t, "", func(o *Options) { o.ConfigPath = missing })
+			},
+			method:     http.MethodGet,
+			path:       "/api/config",
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:       "a request with no token when one is required",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "s3cret") },
+			method:     http.MethodGet,
+			path:       "/api/config",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "a request with the wrong token",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "s3cret") },
+			method:     http.MethodGet,
+			path:       "/api/config",
+			token:      "wrong",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "a state-changing request rejected as cross-site",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodPut,
+			path:       "/api/config",
+			body:       validConfigJSON,
+			mutate:     func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") },
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "a state-changing request rejected by Origin",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodPut,
+			path:       "/api/config",
+			body:       validConfigJSON,
+			mutate:     func(r *http.Request) { r.Header.Set("Origin", "http://evil.example") },
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "a request with a rebound Host",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodGet,
+			path:       "/api/config",
+			mutate:     func(r *http.Request) { r.Host = "attacker.example" },
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "malformed JSON on PUT",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodPut,
+			path:       "/api/config",
+			body:       "{not json",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "the index rejects a non-GET method",
+			server:     func(t *testing.T) *Server { return newTestServer(t, "") },
+			method:     http.MethodPost,
+			path:       "/",
+			wantStatus: http.StatusMethodNotAllowed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := tc.server(t)
+			r := req(t, tc.method, tc.path, tc.token, tc.body)
+			if tc.mutate != nil {
+				tc.mutate(r)
+			}
+
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, r)
+
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+			if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+			}
+		})
+	}
+}
+
+// An error response must never describe the server's filesystem. The UI is a
+// local admin surface, but the browser is still the wrong place to learn where
+// on disk the operator keeps their config and credentials — and the response
+// may be pasted into an issue or a screenshot.
+//
+// This asserts the HTTP body directly rather than trusting config.Load to stay
+// path-free, so a regression in either layer is caught here.
+func TestGetConfig_ErrorResponseNeverDisclosesTheConfigPath(t *testing.T) {
+	cases := map[string]func(t *testing.T) string{
+		"missing config file": func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), "sEcReTdIrNaMe")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			return filepath.Join(dir, "config.yaml")
+		},
+		"unparseable config file": func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), "sEcReTdIrNaMe")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			p := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(p, []byte("accounts: [oops\n"), 0o600); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			return p
+		},
+		"config file that fails validation": func(t *testing.T) string {
+			dir := filepath.Join(t.TempDir(), "sEcReTdIrNaMe")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			p := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(p, []byte("accounts: []\n"), 0o600); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			return p
+		},
+	}
+
+	for name, seed := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := seed(t)
+			srv := newTestServer(t, "", func(o *Options) { o.ConfigPath = path })
+
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req(t, http.MethodGet, "/api/config", "", ""))
+
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+			}
+			body := w.Body.String()
+			for _, leak := range []string{path, filepath.Dir(path), "sEcReTdIrNaMe"} {
+				if strings.Contains(body, leak) {
+					t.Errorf("response discloses %q:\n%s", leak, body)
+				}
+			}
+		})
 	}
 }

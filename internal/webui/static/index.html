@@ -3,118 +3,280 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>calendar-bridge — configuration</title>
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-         margin: 0; padding: 0; line-height: 1.45; }
-  header { padding: 1rem 1.5rem; border-bottom: 1px solid #8884;
-           display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
-  header h1 { font-size: 1.15rem; margin: 0; }
-  header .sub { color: #888c; font-size: .85rem; }
-  main { max-width: 820px; margin: 0 auto; padding: 1.5rem; }
-  fieldset { border: 1px solid #8884; border-radius: 8px; margin: 0 0 1.25rem;
-             padding: 1rem 1.25rem; }
-  legend { font-weight: 600; padding: 0 .4rem; }
-  label { display: block; font-size: .85rem; margin: .6rem 0 .2rem; color: #888e; }
-  input, select { width: 100%; padding: .5rem .6rem; border: 1px solid #8886;
-                  border-radius: 6px; background: transparent; color: inherit;
-                  font: inherit; }
-  .row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; gap: .5rem;
-         align-items: end; margin-bottom: .5rem; }
-  button { font: inherit; padding: .5rem .9rem; border-radius: 6px;
-           border: 1px solid #8886; background: #4462; color: inherit;
-           cursor: pointer; }
-  button.primary { background: #2a7; border-color: #2a7; color: #fff; }
-  button.danger { background: transparent; border-color: #c556; color: #c55; }
-  .bar { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap;
-         margin-top: 1rem; }
-  .toast { padding: .6rem .9rem; border-radius: 6px; font-size: .9rem;
-           display: none; }
-  .toast.ok { background: #2a72; border: 1px solid #2a7; display: block; }
-  .toast.err { background: #c552; border: 1px solid #c55; display: block; }
-  .status { font-size: .85rem; color: #888e; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem 1rem; }
-  .muted { color: #8888; font-size: .8rem; margin-top: .3rem; }
-  code { background: #8882; padding: .1rem .3rem; border-radius: 4px; }
-  .tokrow { display: flex; gap: .5rem; align-items: end; }
-  .tokrow > div { flex: 1; }
+<style nonce="__CSP_NONCE__">
+/* Tokyo Night. Light is the default palette; dark overrides only the tokens.
+   Every foreground/background pair here is at or above 4.5:1. */
+:root {
+  --bg:        #f4f5fb;
+  --surface:   #ffffff;
+  --surface-2: #eceef7;
+  --border:    #c7cbe0;
+  --text:      #1a1b27;
+  --muted:     #4a4f6a;
+  --accent:    #3355aa;
+  --accent-fg: #ffffff;
+  --ok:        #1c6b45;
+  --ok-bg:     #e3f3ea;
+  --warn:      #8a5a00;
+  --warn-bg:   #fbf0da;
+  --err:       #a3243c;
+  --err-bg:    #fbe6ea;
+  --radius: 8px;
+  --gap: 1rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:        #1a1b27;
+    --surface:   #20222f;
+    --surface-2: #292c3d;
+    --border:    #414868;
+    --text:      #c0caf5;
+    --muted:     #9aa5ce;
+    --accent:    #7aa2f7;
+    --accent-fg: #12131c;
+    --ok:        #9ece6a;
+    --ok-bg:     #1f2d20;
+    --warn:      #e0af68;
+    --warn-bg:   #302716;
+    --err:       #f7768e;
+    --err-bg:    #331b22;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+:where(a, button, input, select, summary):focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 1rem 1.25rem;
+}
+.header-inner { max-width: 62rem; margin: 0 auto; }
+header h1 { font-size: 1.15rem; margin: 0 0 .25rem; letter-spacing: -0.01em; }
+header p { margin: 0; color: var(--muted); font-size: .875rem; }
+
+main { max-width: 62rem; margin: 0 auto; padding: 1.25rem; }
+
+/* ---- status panel ---- */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+.panel > h2 {
+  font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 .75rem; font-weight: 600;
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: .75rem;
+  margin: 0;
+}
+.stat { background: var(--surface-2); border-radius: var(--radius); padding: .6rem .75rem; }
+.stat dt { font-size: .75rem; color: var(--muted); margin: 0 0 .15rem; }
+.stat dd { margin: 0; font-size: 1.35rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stat dd.small { font-size: .95rem; font-weight: 500; }
+
+.acct-health { list-style: none; margin: .9rem 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: .5rem; }
+.acct-health li {
+  display: inline-flex; align-items: center; gap: .4rem;
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: .2rem .7rem .2rem .55rem; font-size: .85rem; background: var(--surface-2);
+}
+/* Status is never signalled by colour alone: each pill carries a glyph and a
+   text label, and the glyph shapes differ (check / cross). */
+.pill-mark { font-weight: 700; }
+.ok   .pill-mark { color: var(--ok); }
+.bad  .pill-mark { color: var(--err); }
+.bad { border-color: var(--err); }
+
+.note {
+  display: flex; gap: .6rem; align-items: flex-start;
+  border-radius: var(--radius); padding: .7rem .9rem; margin-top: .9rem;
+  font-size: .9rem; border: 1px solid transparent;
+}
+.note-title { font-weight: 650; }
+.note.err  { background: var(--err-bg);  border-color: var(--err);  color: var(--text); }
+.note.warn { background: var(--warn-bg); border-color: var(--warn); color: var(--text); }
+.note.ok   { background: var(--ok-bg);   border-color: var(--ok);   color: var(--text); }
+.note code { word-break: break-all; }
+
+/* ---- forms ---- */
+fieldset {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  margin: 0 0 1.25rem; padding: 1rem 1.25rem 1.25rem; background: var(--surface);
+}
+legend { font-weight: 650; padding: 0 .4rem; }
+label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: .25rem; font-weight: 500; }
+input {
+  width: 100%; padding: .5rem .6rem; font: inherit; font-size: .95rem;
+  color: var(--text); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+input::placeholder { color: var(--muted); opacity: 1; }
+input[aria-invalid="true"] { border-color: var(--err); border-width: 2px; }
+.field-error { color: var(--err); font-size: .8rem; margin-top: .25rem; font-weight: 500; }
+.hint { color: var(--muted); font-size: .85rem; margin: 0 0 1rem; }
+
+/* Account rows: a responsive grid that collapses to one column on narrow
+   viewports and at high zoom, rather than a fixed five-column track. */
+.acct {
+  display: grid; gap: .6rem .75rem; align-items: end;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  padding: .85rem; margin-bottom: .75rem;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.acct .remove-cell { display: flex; align-items: flex-end; }
+.acct .remove-cell button { width: 100%; }
+
+button {
+  font: inherit; font-size: .95rem; font-weight: 550;
+  padding: .5rem .95rem; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  min-height: 2.5rem;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+button.danger  { color: var(--err); border-color: var(--err); background: transparent; }
+
+.bar { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-top: 1rem; }
+.spinner { font-size: .9rem; color: var(--muted); }
+
+.token-row { display: flex; gap: .75rem; align-items: flex-end; flex-wrap: wrap; }
+.token-row > div { flex: 1 1 14rem; }
+
+.empty {
+  text-align: center; padding: 1.5rem 1rem; color: var(--muted);
+  border: 1px dashed var(--border); border-radius: var(--radius); margin-bottom: .75rem;
+}
+
+code {
+  background: var(--surface-2); border: 1px solid var(--border);
+  padding: .05rem .3rem; border-radius: 4px; font-size: .875em;
+}
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
 </style>
 </head>
 <body>
 <header>
-  <h1>calendar-bridge</h1>
-  <span class="sub">local configuration &mdash; changes are validated and saved to <code>config.yaml</code></span>
+  <div class="header-inner">
+    <h1>calendar-bridge</h1>
+    <p>Local configuration. Changes are validated and saved to <code>config.yaml</code>.</p>
+  </div>
 </header>
+
 <main>
-  <div id="status" class="status">Loading status&hellip;</div>
+  <!-- Status. aria-live so a screen reader hears the result of a sync. -->
+  <section class="panel" aria-labelledby="status-h">
+    <h2 id="status-h">Status</h2>
+    <div id="status" role="status" aria-live="polite">
+      <p class="hint" style="margin:0">Loading status…</p>
+    </div>
+  </section>
 
   <fieldset>
     <legend>Access</legend>
-    <p class="muted">If this instance is configured with an auth token, paste it here.
-      It is stored only in this browser (localStorage) and sent on API requests.
-      Loopback instances with no token can leave this blank.</p>
-    <div class="tokrow">
+    <p class="hint">If this instance is configured with an auth token, paste it here. It is
+      kept only in this browser and sent on API requests. Loopback instances with no token
+      can leave it blank.</p>
+    <div class="token-row">
       <div>
         <label for="token">Auth token</label>
-        <input id="token" type="password" autocomplete="off" placeholder="(none for loopback)">
+        <input id="token" type="password" autocomplete="off" spellcheck="false"
+               placeholder="(none for loopback)">
       </div>
       <button type="button" id="saveToken">Use token</button>
     </div>
   </fieldset>
 
-  <form id="cfgForm">
+  <form id="cfgForm" novalidate>
     <fieldset>
       <legend>Accounts</legend>
-      <p class="muted">One entry per Google account (minimum 2). Credential and token
-        <em>files</em> are referenced by path; their contents never leave your server.
-        Authorize accounts with <code>calendar-bridge auth</code> in the CLI.</p>
+      <p class="hint">One entry per Google account; at least two are required. Credential and
+        token <em>files</em> are referenced by path — their contents never leave your server.
+        Authorize each account from the CLI with
+        <code>calendar-bridge auth -account &lt;name&gt;</code>.</p>
       <div id="accounts"></div>
-      <button type="button" id="addAcct">+ Add account</button>
+      <button type="button" id="addAcct">Add account</button>
     </fieldset>
 
     <fieldset>
       <legend>Sync settings</legend>
-      <div class="grid2">
+      <div class="acct" style="background:transparent;border:0;padding:0">
         <div>
-          <label for="pollInterval">Poll interval (e.g. 5m)</label>
-          <input id="pollInterval" name="pollInterval">
+          <label for="pollInterval">Poll interval</label>
+          <input id="pollInterval" name="pollInterval" placeholder="5m"
+                 aria-describedby="pollInterval-err">
+          <p class="field-error" id="pollInterval-err" hidden></p>
         </div>
         <div>
-          <label for="lookaheadDays">Lookahead days</label>
-          <input id="lookaheadDays" name="lookaheadDays" type="number" min="0">
+          <label for="lookaheadDays">Lookahead (days)</label>
+          <input id="lookaheadDays" name="lookaheadDays" type="number" min="0" step="1"
+                 inputmode="numeric" aria-describedby="lookaheadDays-err">
+          <p class="field-error" id="lookaheadDays-err" hidden></p>
         </div>
         <div style="grid-column:1/-1">
           <label for="blockTitle">Busy block title</label>
-          <input id="blockTitle" name="blockTitle">
+          <input id="blockTitle" name="blockTitle" placeholder="Busy (calendar-bridge)">
         </div>
       </div>
     </fieldset>
 
     <div class="bar">
-      <button type="submit" class="primary">Save configuration</button>
+      <button type="submit" class="primary" id="saveBtn">Save configuration</button>
       <button type="button" id="syncBtn">Sync now</button>
       <button type="button" id="reload">Reload</button>
+      <span class="spinner" id="busy" hidden>Working…</span>
     </div>
-    <div id="toast" class="toast"></div>
+    <div id="toast" role="alert" aria-live="assertive"></div>
   </form>
 </main>
 
-<script>
+<script nonce="__CSP_NONCE__">
 "use strict";
-// Token handling: persisted in localStorage (never in the URL, so it can't
-// land in server logs or browser history), migrating any legacy #token=
-// fragment into storage once. Sent as a Bearer header on API calls.
+
+// The token lives in localStorage, never in the URL, so it can't land in
+// server logs or browser history. A legacy #token= fragment is migrated once.
 const TOKEN_KEY = "cb_auth_token";
 (function migrateFragment() {
-  const frag = new URLSearchParams(location.hash.slice(1)).get("token");
-  if (frag) {
-    localStorage.setItem(TOKEN_KEY, frag);
-    history.replaceState(null, "", location.pathname); // drop it from the address bar
-  }
+  try {
+    const frag = new URLSearchParams(location.hash.slice(1)).get("token");
+    if (frag) {
+      localStorage.setItem(TOKEN_KEY, frag);
+      history.replaceState(null, "", location.pathname);
+    }
+  } catch (e) { /* storage unavailable; the field still works per-session */ }
 })();
-function getToken() { return localStorage.getItem(TOKEN_KEY) || ""; }
+function getToken() {
+  try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; }
+}
+function setToken(v) {
+  try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+}
 function authHeaders(extra) {
   const h = Object.assign({}, extra || {});
   const t = getToken();
@@ -123,144 +285,329 @@ function authHeaders(extra) {
 }
 
 const $ = (id) => document.getElementById(id);
+const el = (tag, props, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props || {});
+  for (const k of kids) n.append(k);
+  return n;
+};
+
+// ---- feedback ----------------------------------------------------------
 const toast = $("toast");
-function showToast(msg, ok) {
-  toast.textContent = msg;
-  toast.className = "toast " + (ok ? "ok" : "err");
-  if (ok) setTimeout(() => { toast.className = "toast"; }, 4000);
+let toastTimer = null;
+function showToast(msg, kind) {
+  clearTimeout(toastTimer);
+  toast.replaceChildren(el("div", { className: "note " + kind },
+    el("span", { className: "note-title" }, kind === "err" ? "Error" : "Done"),
+    el("span", {}, msg)));
+  if (kind === "ok") toastTimer = setTimeout(() => toast.replaceChildren(), 6000);
+}
+function setBusy(on, label) {
+  $("busy").hidden = !on;
+  if (on && label) $("busy").textContent = label;
+  for (const id of ["saveBtn", "syncBtn", "reload", "addAcct"]) $(id).disabled = on;
 }
 
-// Token field wiring.
-$("token").value = getToken();
-$("saveToken").addEventListener("click", () => {
-  const t = $("token").value.trim();
-  if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY);
-  showToast("Token updated for this browser.", true);
-  loadConfig(); loadStatus();
-});
-
-// Build an account row with DOM APIs. Setting input.value takes a raw string,
-// so there is no escaping to get wrong (and no innerHTML injection surface).
-const accountsEl = $("accounts");
-function field(labelText, cls, value) {
-  const wrap = document.createElement("div");
-  const lab = document.createElement("label");
-  lab.appendChild(document.createTextNode(labelText));
-  const inp = document.createElement("input");
-  inp.className = cls;
-  inp.value = value == null ? "" : String(value);
-  // Nest the input inside the label so the two are associated (screen
-  // readers announce the field by name) without needing generated ids.
-  lab.appendChild(inp);
-  wrap.appendChild(lab);
-  return wrap;
+// ---- status ------------------------------------------------------------
+function fmtTime(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleString();
 }
-function accountRow(a) {
-  a = a || {};
-  const div = document.createElement("div");
-  div.className = "row";
-  div.appendChild(field("Name", "a-name", a.name));
-  div.appendChild(field("Credentials file", "a-cred", a.credentials_file));
-  div.appendChild(field("Token file", "a-tok", a.token_file));
-  div.appendChild(field("Calendar ID", "a-cal", a.calendar_id || "primary"));
-  const delWrap = document.createElement("div");
-  const del = document.createElement("button");
-  del.type = "button"; del.className = "danger a-del"; del.textContent = "Remove";
-  del.addEventListener("click", () => div.remove());
-  delWrap.appendChild(document.createElement("label"));
-  delWrap.appendChild(del);
-  div.appendChild(delWrap);
-  return div;
+function relative(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const secs = Math.round((Date.now() - d.getTime()) / 1000);
+  if (secs < 60) return "just now";
+  if (secs < 3600) return Math.round(secs / 60) + " min ago";
+  if (secs < 86400) return Math.round(secs / 3600) + " h ago";
+  return Math.round(secs / 86400) + " d ago";
 }
-$("addAcct").addEventListener("click", () => accountsEl.appendChild(accountRow()));
+function stat(label, value, small) {
+  return el("div", { className: "stat" },
+    el("dt", {}, label),
+    el("dd", { className: small ? "small" : "" }, String(value)));
+}
 
-async function loadConfig() {
-  try {
-    const res = await fetch("/api/config", { headers: authHeaders() });
-    if (res.status === 401) { showToast("Auth token required or invalid.", false); return; }
-    if (!res.ok) { showToast("Failed to load config: " + res.status, false); return; }
-    const cfg = await res.json();
-    accountsEl.replaceChildren();
-    (cfg.accounts || []).forEach((a) => accountsEl.appendChild(accountRow(a)));
-    $("pollInterval").value = cfg.poll_interval || "";
-    $("lookaheadDays").value = (cfg.lookahead_days != null && cfg.lookahead_days !== 0) ? cfg.lookahead_days : "";
-    $("blockTitle").value = cfg.block_title || "";
-  } catch (e) {
-    showToast("Failed to load config.", false);
+function renderStatus(s) {
+  const box = $("status");
+  box.replaceChildren();
+
+  const stats = el("dl", { className: "stats" });
+  stats.append(stat("Accounts", s.accounts || 0));
+  stats.append(stat("Mode", s.running ? (s.push_enabled ? "Polling + push" : "Polling") : "Idle", true));
+  stats.append(stat("Last sync", s.last_sync ? relative(s.last_sync) : "Never", true));
+  stats.append(stat("Created", s.created || 0));
+  stats.append(stat("Updated", s.updated || 0));
+  stats.append(stat("Removed", s.deleted || 0));
+  if (s.skipped) stats.append(stat("Skipped", s.skipped));
+  box.append(stats);
+
+  if (s.last_sync) {
+    box.append(el("p", { className: "hint", style: "margin:.75rem 0 0" },
+      "Last successful pass " + fmtTime(s.last_sync) +
+      (s.last_duration_ms ? " (" + (s.last_duration_ms / 1000).toFixed(1) + "s)" : "") + "."));
   }
+
+  if (Array.isArray(s.account_status) && s.account_status.length) {
+    const ul = el("ul", { className: "acct-health" });
+    for (const a of s.account_status) {
+      ul.append(el("li", { className: a.healthy ? "ok" : "bad" },
+        el("span", { className: "pill-mark", "aria-hidden": "true" }, a.healthy ? "✓" : "✕"),
+        el("span", {}, a.name),
+        el("span", { className: "visually-hidden" }, a.healthy ? " — healthy" : " — failing")));
+    }
+    box.append(ul);
+  }
+
+  if (s.last_error) {
+    box.append(errorNote(s.last_error));
+  } else if (!s.running) {
+    box.append(el("div", { className: "note warn" },
+      el("span", { className: "note-title" }, "Idle"),
+      el("span", {}, "This process serves the UI only — it is not polling. Run " +
+        "calendar-bridge run for continuous sync, or press “Sync now” for a one-off pass.")));
+  }
+  if (!s.accounts) {
+    box.append(el("div", { className: "note warn" },
+      el("span", { className: "note-title" }, "No accounts"),
+      el("span", {}, "Add at least two accounts below, then authorize each one from the CLI.")));
+  }
+}
+
+// The two failures people actually hit deserve their own explanation rather
+// than a raw error string.
+function errorNote(msg) {
+  const lower = String(msg).toLowerCase();
+  let title = "Last pass failed";
+  let advice = null;
+  if (lower.includes("not yet authorized")) {
+    title = "An account is not authorized";
+    advice = "Run: calendar-bridge auth -account <name>";
+  } else if (lower.includes("could not be read as an oauth2 token")) {
+    title = "A token file is unreadable";
+    advice = "Delete that token file and re-run: calendar-bridge auth -account <name>";
+  } else if (lower.includes("oauth2") || lower.includes("token") ||
+             lower.includes("401") || lower.includes("invalid_grant")) {
+    title = "An account's token expired or was revoked";
+    advice = "Re-run: calendar-bridge auth -account <name>";
+  } else if (lower.includes("fewer than 2 healthy accounts")) {
+    title = "Too few healthy accounts to sync";
+    advice = "At least two accounts must fetch successfully. Check the per-account health above.";
+  }
+  const note = el("div", { className: "note err" },
+    el("div", {},
+      el("div", { className: "note-title" }, title),
+      el("div", { style: "margin-top:.25rem" }, msg)));
+  if (advice) note.lastChild.append(el("div", { style: "margin-top:.4rem" }, el("code", {}, advice)));
+  return note;
 }
 
 async function loadStatus() {
   try {
     const res = await fetch("/api/status", { headers: authHeaders() });
-    if (!res.ok) throw new Error(res.status);
-    const s = await res.json();
-    let msg = (s.accounts || 0) + " accounts";
-    if (s.last_sync) msg += " · last sync " + new Date(s.last_sync).toLocaleString();
-    else msg += " · not synced yet";
-    if (s.last_error) msg += " · error: " + s.last_error;
-    $("status").textContent = msg;
+    if (res.status === 401) {
+      $("status").replaceChildren(el("div", { className: "note warn" },
+        el("span", { className: "note-title" }, "Auth required"),
+        el("span", {}, "Paste this instance's auth token above.")));
+      return;
+    }
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    renderStatus(await res.json());
   } catch (e) {
-    $("status").textContent = "status unavailable";
+    $("status").replaceChildren(el("div", { className: "note err" },
+      el("span", { className: "note-title" }, "Status unavailable"),
+      el("span", {}, "Could not reach the server.")));
   }
 }
 
+// ---- accounts ----------------------------------------------------------
+let rowSeq = 0;
+const accountsEl = $("accounts");
+
+function field(labelText, cls, value, id) {
+  const inp = el("input", { className: cls, id: id, value: value == null ? "" : String(value),
+                            spellcheck: false, autocapitalize: "none" });
+  return el("div", {}, el("label", { htmlFor: id }, labelText), inp);
+}
+
+function accountRow(a) {
+  a = a || {};
+  const n = ++rowSeq;
+  const name = a.name || "";
+  const div = el("div", { className: "acct" });
+  div.setAttribute("role", "group");
+  div.setAttribute("aria-label", name ? "Account " + name : "New account");
+  div.append(
+    field("Name", "a-name", name, "a-name-" + n),
+    field("Credentials file", "a-cred", a.credentials_file, "a-cred-" + n),
+    field("Token file", "a-tok", a.token_file, "a-tok-" + n),
+    field("Calendar ID", "a-cal", a.calendar_id || "primary", "a-cal-" + n));
+
+  const del = el("button", { type: "button", className: "danger" }, "Remove");
+  del.setAttribute("aria-label", name ? "Remove account " + name : "Remove this account");
+  del.addEventListener("click", () => {
+    const label = div.querySelector(".a-name").value.trim() || "this unnamed account";
+    // Destructive and not undoable from the page: confirm first.
+    if (!window.confirm("Remove " + label + " from the configuration?\n\n" +
+        "This only edits config.yaml. It does not revoke the account or delete any " +
+        "busy blocks already created on its calendar.")) return;
+    div.remove();
+    showToast("Removed " + label + " from the form. Press “Save configuration” to apply.", "ok");
+    renderEmptyState();
+  });
+  div.append(el("div", { className: "remove-cell" }, del));
+  return div;
+}
+
+function renderEmptyState() {
+  const existing = accountsEl.querySelector(".empty");
+  if (existing) existing.remove();
+  if (!accountsEl.querySelector(".acct")) {
+    accountsEl.append(el("div", { className: "empty" },
+      "No accounts configured yet. calendar-bridge needs at least two to sync between."));
+  }
+}
+
+$("addAcct").addEventListener("click", () => {
+  const row = accountRow();
+  accountsEl.append(row);
+  renderEmptyState();
+  const first = row.querySelector("input");
+  if (first) first.focus();
+});
+
+// ---- config ------------------------------------------------------------
+async function loadConfig() {
+  try {
+    const res = await fetch("/api/config", { headers: authHeaders() });
+    if (res.status === 401) { showToast("Auth token required or invalid.", "err"); return; }
+    if (!res.ok) { showToast("Could not load the configuration (HTTP " + res.status + ").", "err"); return; }
+    const cfg = await res.json();
+    accountsEl.replaceChildren();
+    (cfg.accounts || []).forEach((a) => accountsEl.append(accountRow(a)));
+    renderEmptyState();
+    $("pollInterval").value = cfg.poll_interval || "";
+    $("lookaheadDays").value = (cfg.lookahead_days != null && cfg.lookahead_days !== 0) ? cfg.lookahead_days : "";
+    $("blockTitle").value = cfg.block_title || "";
+    clearFieldError("pollInterval");
+    clearFieldError("lookaheadDays");
+  } catch (e) {
+    showToast("Could not load the configuration.", "err");
+  }
+}
+
+function setFieldError(id, msg) {
+  const input = $(id), out = $(id + "-err");
+  input.setAttribute("aria-invalid", "true");
+  out.textContent = msg;
+  out.hidden = false;
+}
+function clearFieldError(id) {
+  const input = $(id), out = $(id + "-err");
+  input.removeAttribute("aria-invalid");
+  out.textContent = "";
+  out.hidden = true;
+}
+
+// collectConfig returns {cfg} or {errors:[{field,msg}]}. Validation failures
+// are reported against the offending field and never discard what was typed.
 function collectConfig() {
-  const accounts = [...accountsEl.querySelectorAll(".row")].map((r) => ({
+  const errors = [];
+  clearFieldError("pollInterval");
+  clearFieldError("lookaheadDays");
+
+  const accounts = [...accountsEl.querySelectorAll(".acct")].map((r) => ({
     name: r.querySelector(".a-name").value.trim(),
     credentials_file: r.querySelector(".a-cred").value.trim(),
     token_file: r.querySelector(".a-tok").value.trim(),
     calendar_id: r.querySelector(".a-cal").value.trim(),
   }));
+
+  const poll = $("pollInterval").value.trim();
+  if (poll && !/^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(poll)) {
+    errors.push({ field: "pollInterval", msg: "Use a Go duration such as 5m, 30s or 1h30m." });
+  }
+
   const cfg = {
     accounts,
-    poll_interval: $("pollInterval").value.trim(),
+    poll_interval: poll,
     block_title: $("blockTitle").value.trim(),
-    web_ui: { auth_token: "" }, // empty => server keeps existing token/enabled/listen_addr
+    // Empty => the server keeps the existing token, enabled flag and listen_addr.
+    web_ui: { auth_token: "" },
   };
+
   const la = $("lookaheadDays").value.trim();
   if (la !== "") {
-    // parseInt("1e2", 10) === 1, silently truncating what the <input
-    // type="number"> field actually represents (100). Number() parses the
-    // whole value instead, and we reject anything that isn't a genuine
-    // non-negative integer rather than coercing it to 0.
+    // Number() rather than parseInt(): parseInt("1e2", 10) is 1, silently
+    // truncating what the number input actually represents.
     const days = Number(la);
     if (!Number.isSafeInteger(days) || days < 0) {
-      throw new Error("lookahead_days must be a non-negative integer");
+      errors.push({ field: "lookaheadDays", msg: "Enter a whole number of days, 0 or more." });
+    } else {
+      cfg.lookahead_days = days;
     }
-    cfg.lookahead_days = days;
-  } // omit when blank so defaults apply
-  return cfg;
+  } // omitted when blank, so the server default applies
+
+  if (errors.length) {
+    for (const e of errors) setFieldError(e.field, e.msg);
+    return { errors };
+  }
+  return { cfg };
 }
 
 $("cfgForm").addEventListener("submit", async (e) => {
   e.preventDefault();
+  const collected = collectConfig();
+  if (collected.errors) {
+    showToast(collected.errors.map((x) => x.msg).join(" "), "err");
+    $(collected.errors[0].field).focus();
+    return;
+  }
+  setBusy(true, "Saving…");
   try {
     const res = await fetch("/api/config", {
       method: "PUT",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(collectConfig()),
+      body: JSON.stringify(collected.cfg),
     });
     const body = await res.json().catch(() => ({}));
-    showToast(res.ok ? "Configuration saved." : ("Save failed: " + (body.error || res.status)), res.ok);
-  } catch (e) {
-    showToast("Save failed.", false);
+    if (res.ok) {
+      showToast("Configuration saved.", "ok");
+    } else {
+      showToast(body.error || ("Save failed (HTTP " + res.status + ")."), "err");
+    }
+  } catch (err) {
+    showToast("Save failed: could not reach the server.", "err");
+  } finally {
+    setBusy(false);
+    loadStatus();
   }
 });
 
 $("syncBtn").addEventListener("click", async () => {
-  showToast("Running sync…", true);
+  setBusy(true, "Syncing…");
   try {
     const res = await fetch("/api/sync", { method: "POST", headers: authHeaders() });
     const body = await res.json().catch(() => ({}));
-    showToast(res.ok ? "Sync complete." : ("Sync failed: " + (body.error || res.status)), res.ok);
+    showToast(res.ok ? "Sync complete." : (body.error || ("Sync failed (HTTP " + res.status + ").")),
+              res.ok ? "ok" : "err");
   } catch (e) {
-    showToast("Sync failed.", false);
+    showToast("Sync failed: could not reach the server.", "err");
+  } finally {
+    setBusy(false);
+    loadStatus();
   }
-  loadStatus();
 });
 
 $("reload").addEventListener("click", () => { loadConfig(); loadStatus(); });
+
+$("token").value = getToken();
+$("saveToken").addEventListener("click", () => {
+  setToken($("token").value.trim());
+  showToast("Token updated for this browser.", "ok");
+  loadConfig(); loadStatus();
+});
 
 loadConfig();
 loadStatus();
