@@ -942,62 +942,46 @@ var errTestWrite = &testError{"simulated write failure"}
 // ---- lookup and precondition failures ----
 
 // When the in-memory index misses, ensureBlock falls back to a lookup. If that
-// lookup FAILS, the engine must surface the error and must NOT insert — an
-// insert on an unknown state is how duplicate blocks appear.
-func TestSyncOnce_FallbackLookupFailures(t *testing.T) {
+// lookup FAILS, the engine must surface the error and must NOT insert —
+// inserting on an unknown state is how duplicate blocks appear.
+//
+// Only FindBlockBySource is on this path. GetEvent is reached solely from
+// googleProvider.DeleteBlock's pre-delete ownership read, so its failure is
+// covered where it is actually called: see TestGoogleProvider_PropagatesClientErrors
+// and TestProductionWiring_PreDeleteReadFailureDoesNotDelete.
+func TestSyncOnce_FallbackLookupFailureSurfacesWithoutInserting(t *testing.T) {
+	h := newHarness(t, "personal", "work-acme")
+
 	// A block for personal/evt-1 far outside the fetch window, so the index
-	// cannot cover it and the fallback is forced.
-	seedOutOfWindow := func(h *harness) {
-		far := baseTime.Add(60 * 24 * time.Hour)
-		h.fakes["work-acme"].seed("stale-block", &calendar.Event{
-			Summary: "Busy (calendar-bridge)",
-			Start:   &calendar.EventDateTime{DateTime: far.Format(time.RFC3339), TimeZone: "UTC"},
-			End:     &calendar.EventDateTime{DateTime: far.Add(time.Hour).Format(time.RFC3339), TimeZone: "UTC"},
-			ExtendedProperties: &calendar.EventExtendedProperties{Private: map[string]string{
-				ownerKey:          ownerValue,
-				sourceAccountKey:  "personal",
-				sourceCalendarKey: "primary",
-				sourceEventKey:    "evt-1",
-			}},
-		})
-		h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+	// cannot cover it and the fallback lookup is forced.
+	far := baseTime.Add(60 * 24 * time.Hour)
+	h.fakes["work-acme"].seed("stale-block", &calendar.Event{
+		Summary: "Busy (calendar-bridge)",
+		Start:   &calendar.EventDateTime{DateTime: far.Format(time.RFC3339), TimeZone: "UTC"},
+		End:     &calendar.EventDateTime{DateTime: far.Add(time.Hour).Format(time.RFC3339), TimeZone: "UTC"},
+		ExtendedProperties: &calendar.EventExtendedProperties{Private: map[string]string{
+			ownerKey:          ownerValue,
+			sourceAccountKey:  "personal",
+			sourceCalendarKey: "primary",
+			sourceEventKey:    "evt-1",
+		}},
+	})
+	h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+	h.fakes["work-acme"].failFind = errTestLookup
+
+	res, err := h.engine.SyncOnce(context.Background())
+	if err == nil {
+		t.Fatal("a failed fallback lookup must surface")
 	}
-
-	cases := []struct {
-		name   string
-		inject func(f *fakeCalendarClient)
-	}{
-		{"FindBlockBySource fails", func(f *fakeCalendarClient) { f.failFind = errTestLookup }},
-		{"GetEvent fails", func(f *fakeCalendarClient) { f.failGet = errTestLookup }},
+	if !strings.Contains(err.Error(), errTestLookup.Error()) {
+		t.Errorf("error %v does not carry the lookup failure", err)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t, "personal", "work-acme")
-			seedOutOfWindow(h)
-			tc.inject(h.fakes["work-acme"])
-
-			res, err := h.engine.SyncOnce(context.Background())
-
-			// GetEvent is not on the engine's direct path, so only the Find
-			// case is expected to fail the pass. Either way the invariant that
-			// matters is the same: no duplicate block.
-			if tc.name == "FindBlockBySource fails" {
-				if err == nil {
-					t.Fatal("a failed fallback lookup must surface")
-				}
-				if !strings.Contains(err.Error(), errTestLookup.Error()) {
-					t.Errorf("error %v does not carry the lookup failure", err)
-				}
-				if res.Created != 0 {
-					t.Errorf("Created = %d, want 0 — never insert on an unknown state", res.Created)
-				}
-			}
-			if got := len(h.fakes["work-acme"].ownedBlocks()); got != 1 {
-				t.Errorf("work-acme has %d owned blocks, want the single seeded one — a failed "+
-					"lookup must never produce a duplicate", got)
-			}
-		})
+	if res.Created != 0 {
+		t.Errorf("Created = %d, want 0 — never insert on an unknown state", res.Created)
+	}
+	if got := len(h.fakes["work-acme"].ownedBlocks()); got != 1 {
+		t.Errorf("work-acme has %d owned blocks, want the single seeded one — a failed lookup "+
+			"must never produce a duplicate", got)
 	}
 }
 

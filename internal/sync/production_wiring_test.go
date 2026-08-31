@@ -262,3 +262,31 @@ func TestProductionWiring_WriteFailuresSurfaceAndLeaveNoPartialBlock(t *testing.
 		}
 	})
 }
+
+// googleProvider.DeleteBlock re-reads the target before deleting, to prove it
+// is still owned. If that read FAILS, the delete must not proceed: a delete on
+// unverified state is exactly what the re-read exists to prevent.
+func TestProductionWiring_PreDeleteReadFailureDoesNotDelete(t *testing.T) {
+	h := productionHarness(t, "personal", "work-acme")
+	h.fakes["personal"].seed("evt-1", at("evt-1", 48*time.Hour, time.Hour))
+	h.run(t)
+	if got := len(h.fakes["work-acme"].ownedBlocks()); got != 1 {
+		t.Fatalf("setup: want 1 block, got %d", got)
+	}
+
+	// The source disappears, so GC will try to collect the block — but the
+	// pre-delete ownership read fails.
+	h.fakes["personal"].remove("evt-1")
+	h.fakes["work-acme"].failGet = errTestLookup
+
+	res, err := h.engine.SyncOnce(context.Background())
+	if err == nil {
+		t.Fatal("a failed pre-delete read must surface")
+	}
+	if res.Deleted != 0 {
+		t.Errorf("Deleted = %d, want 0", res.Deleted)
+	}
+	if got := len(h.fakes["work-acme"].ownedBlocks()); got != 1 {
+		t.Errorf("the block was removed despite the ownership re-read failing; %d blocks remain, want 1", got)
+	}
+}
